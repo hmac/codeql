@@ -18,6 +18,9 @@ parsing untrusted data. How this is done depends on the library being used. Note
 libraries, such as <code>rexml</code>, <code>nokogiri</code> and <code>libxml-ruby</code>, 
 disable entity expansion by default, so unless you have explicitly enabled entity expansion,
 no further action needs to be taken.
+
+
+SOme more stuff here.
 </p>
 </recommendation>
 
