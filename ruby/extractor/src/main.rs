@@ -15,6 +15,8 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use tree_sitter::{Language, Parser, Range};
 
+use crate::extractor::Extractor;
+
 /**
  * Gets the number of threads the extractor should use, by reading the
  * CODEQL_THREADS environment variable and using it as described in the
@@ -130,98 +132,89 @@ fn main() -> std::io::Result<()> {
     let file_list = matches.value_of("file-list").expect("missing --file-list");
     let file_list = fs::File::open(file_list)?;
 
-    let language = tree_sitter_ruby::language();
-    let erb = tree_sitter_embedded_template::language();
+    let lang_ruby = tree_sitter_ruby::language();
+    let lang_erb = tree_sitter_embedded_template::language();
+
+    let schema_ruby = node_types::read_node_types_str("ruby", tree_sitter_ruby::NODE_TYPES)?;
+    let schema_erb =
+        node_types::read_node_types_str("erb", tree_sitter_embedded_template::NODE_TYPES)?;
+    let lines: std::io::Result<Vec<String>> = std::io::BufReader::new(file_list).lines().collect();
+    let lines = lines?;
+
     // Look up tree-sitter kind ids now, to avoid string comparisons when scanning ERB files.
     let erb_directive_id = erb.id_for_node_kind("directive", true);
     let erb_output_directive_id = erb.id_for_node_kind("output_directive", true);
     let erb_code_id = erb.id_for_node_kind("code", true);
-    let schema = node_types::read_node_types_str("ruby", tree_sitter_ruby::NODE_TYPES)?;
-    let erb_schema =
-        node_types::read_node_types_str("erb", tree_sitter_embedded_template::NODE_TYPES)?;
-    let lines: std::io::Result<Vec<String>> = std::io::BufReader::new(file_list).lines().collect();
-    let lines = lines?;
-    lines
-        .par_iter()
-        .try_for_each(|line| {
-            let mut diagnostics_writer = diagnostics.logger();
-            let path = PathBuf::from(line).canonicalize()?;
-            let src_archive_file = path_for(&src_archive_dir, &path, "");
-            let mut source = std::fs::read(&path)?;
-            let mut needs_conversion = false;
-            let code_ranges;
-            let mut trap_writer = trap::Writer::new();
-            if path.extension().map_or(false, |x| x == "erb") {
-                tracing::info!("scanning: {}", path.display());
-                extractor::extract(
-                    erb,
-                    "erb",
-                    &erb_schema,
-                    &mut diagnostics_writer,
-                    &mut trap_writer,
-                    &path,
-                    &source,
-                    &[],
-                )?;
 
-                let (ranges, line_breaks) = scan_erb(
-                    erb,
-                    &source,
-                    erb_directive_id,
-                    erb_output_directive_id,
-                    erb_code_id,
-                );
-                for i in line_breaks {
-                    if i < source.len() {
-                        source[i] = b'\n';
-                    }
-                }
-                code_ranges = ranges;
-            } else {
-                if let Some(encoding_name) = scan_coding_comment(&source) {
-                    // If the input is already UTF-8 then there is no need to recode the source
-                    // If the declared encoding is 'binary' or 'ascii-8bit' then it is not clear how
-                    // to interpret characters. In this case it is probably best to leave the input
-                    // unchanged.
-                    if !encoding_name.eq_ignore_ascii_case("utf-8")
-                        && !encoding_name.eq_ignore_ascii_case("ascii-8bit")
-                        && !encoding_name.eq_ignore_ascii_case("binary")
+    fn pre_extract_erb(path: &Path, source: &mut Vec<u8>, logger: &mut diagnostics::LogWriter) -> PreExtract {
+        let mut source_modified = false;
+
+        tracing::info!("scanning: {}", path.display());
+        let (code_ranges, line_breaks) = scan_erb(
+            lang_erb,
+            source,
+            erb_directive_id,
+            erb_output_directive_id,
+            erb_code_id,
+        );
+        for i in line_breaks {
+            if i < source.len() {
+                source_modified = true;
+                source[i] = b'\n';
+            }
+        }
+
+        PreExtract { code_ranges, source_modified }
+    }
+
+    fn pre_extract_ruby(path: &Path, source: &mut Vec<u8>, logger: &mut diagnostics::LogWriter) -> PreExtract {
+        let source_modified = normalise_ruby_source_encoding(path, logger);
+        PreExtract { source_modified, code_ranges: vec![] }
+    }
+
+    let mut extractor = Extractor::new(lines.clone());
+    let extract_ruby = extractor.build_language("ruby", lang_ruby, schema, Some(pre_extract_ruby));
+    let extract_erb = extractor.build_language("erb", lang_erb, erb_schema, Some(pre_extract_erb));
+
+    extractor.register_default_language("rb", extract_ruby.clone());
+    extractor.register_language("erb", extract_ruby.clone());
+    extractor.register_language("erb", extract_erb);
+
+    extractor.run(lines)?;
+}
+
+fn normalise_ruby_source_encoding(source: &mut Vec<u8>, logger: &mut diagnostics::LogWriter) -> bool {
+    let mut source_modified = false;
+    if let Some(encoding_name) = scan_coding_comment(&source) {
+
+        // If the input is already UTF-8 then there is no need to recode the source
+        // If the declared encoding is 'binary' or 'ascii-8bit' then it is not clear how
+        // to interpret characters. In this case it is probably best to leave the input
+        // unchanged.
+        if !encoding_name.eq_ignore_ascii_case("utf-8")
+            && !encoding_name.eq_ignore_ascii_case("ascii-8bit")
+            && !encoding_name.eq_ignore_ascii_case("binary")
+        {
+            if let Some(encoding) = encoding_from_name(&encoding_name) {
+                if encoding.whatwg_name().unwrap_or_default() != "utf-8" {
+                    match encoding
+                        .decode(&source, encoding::types::DecoderTrap::Replace)
                     {
-                        if let Some(encoding) = encoding_from_name(&encoding_name) {
-                            needs_conversion =
-                                encoding.whatwg_name().unwrap_or_default() != "utf-8";
-                            if needs_conversion {
-                                match encoding
-                                    .decode(&source, encoding::types::DecoderTrap::Replace)
-                                {
-                                    Ok(str) => source = str.as_bytes().to_owned(),
-                                    Err(msg) => {
-                                        needs_conversion = false;
-                                        diagnostics_writer.write(
-                                            diagnostics_writer
-                                                .message(
-                                                    "character-encoding-error",
-                                                    "Character encoding error",
-                                                )
-                                                .text(&format!(
-                                                    "{}: character decoding failure: {} ({})",
-                                                    &path.to_string_lossy(),
-                                                    msg,
-                                                    &encoding_name
-                                                ))
-                                                .status_page()
-                                                .severity(diagnostics::Severity::Warning),
-                                        );
-                                    }
-                                }
-                            }
-                        } else {
+                        Ok(converted) => {
+                            source_modified = true;
+                            source = converted.as_bytes().to_owned()
+                        }
+                        Err(msg) => {
                             diagnostics_writer.write(
                                 diagnostics_writer
-                                    .message("character-encoding-error", "Character encoding error")
+                                    .message(
+                                        "character-encoding-error",
+                                        "Character encoding error",
+                                    )
                                     .text(&format!(
-                                        "{}: unknown character encoding: '{}'",
+                                        "{}: character decoding failure: {} ({})",
                                         &path.to_string_lossy(),
+                                        msg,
                                         &encoding_name
                                     ))
                                     .status_page()
@@ -230,32 +223,23 @@ fn main() -> std::io::Result<()> {
                         }
                     }
                 }
-                code_ranges = vec![];
-            }
-            extractor::extract(
-                language,
-                "ruby",
-                &schema,
-                &mut diagnostics_writer,
-                &mut trap_writer,
-                &path,
-                &source,
-                &code_ranges,
-            )?;
-            std::fs::create_dir_all(&src_archive_file.parent().unwrap())?;
-            if needs_conversion {
-                std::fs::write(&src_archive_file, &source)?;
             } else {
-                std::fs::copy(&path, &src_archive_file)?;
+                diagnostics_writer.write(
+                    diagnostics_writer
+                        .message("character-encoding-error", "Character encoding error")
+                        .text(&format!(
+                            "{}: unknown character encoding: '{}'",
+                            &path.to_string_lossy(),
+                            &encoding_name
+                        ))
+                        .status_page()
+                        .severity(diagnostics::Severity::Warning),
+                );
             }
-            write_trap(&trap_dir, path, &trap_writer, trap_compression)
-        })
-        .expect("failed to extract files");
+        }
+    }
 
-    let path = PathBuf::from("extras");
-    let mut trap_writer = trap::Writer::new();
-    extractor::populate_empty_location(&mut trap_writer);
-    write_trap(&trap_dir, path, &trap_writer, trap_compression)
+    source_modified
 }
 
 fn write_trap(

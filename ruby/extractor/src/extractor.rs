@@ -3,10 +3,138 @@ use crate::trap;
 use node_types::{EntryKind, Field, NodeTypeMap, Storage, TypeName};
 use std::collections::BTreeMap as Map;
 use std::collections::BTreeSet as Set;
+use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::path::Path;
 
 use tree_sitter::{Language, Node, Parser, Range, Tree};
+
+pub struct ExtractLanguage {
+    prefix: String,
+    language: tree_sitter::Language,
+    schema: node_types::NodeTypeMap,
+    /// Optional pre-extraction processing of the source.
+    pre_extract: Option<fn(&Path, &mut Vec<u8>, &mut diagnostics::LogWriter) -> Option<PreExtract>,
+}
+
+pub struct Extractor {
+    /// List of files to be extracted.
+    file_list: Vec<String>,
+    languages: HashMap<OsString, Vec<ExtractLanguage>>,
+    default_language: Option<ExtractLanguage>
+    source_archive_dir: PathBuf,
+    trap_dir: PathBuf,
+    trap_compression: trap::Compression,
+}
+
+pub struct PreExtract {
+    /// Empty if the full file should be extracted.
+    /// Otherwise, just the given ranges should be extracted.
+    code_ranges: Vec<Range>,
+    /// `true` if the pre-extract step has modified the source.
+    source_modified: bool
+}
+
+impl Extractor {
+    pub fn new(file_list: Vec<String>, source_archive_dir: AsRef<Path>, trap_dir: AsRef<Path>, trap_compression: trap::Compression) -> Self {
+        Self {
+            file_list,
+            languages: HashMap::new(),
+            default_language: None,
+            source_archive_dir: source_archive_dir.as_ref().to_path_buf(),
+            trap_dir: trap_dir.as_ref().to_path_buf(),
+            trap_compression,
+        }
+    }
+
+    pub fn register_language(
+        &mut self,
+        extension: String,
+        lang: ExtractLanguage,
+    ) {
+        self.languages
+            .entry(extension.into())
+            .or_insert(vec![])
+            .and_modify(|langs| langs.append(lang));
+    }
+
+    pub fn register_default_language(
+        &mut self,
+        extension: String,
+        lang: ExtractLanguage,
+    ) {
+        self.default_language = lang;
+    }
+
+    pub fn build_language(
+        &self,
+        prefix: &str,
+        language: tree_sitter::Language,
+        schema: node_types::NodeTypeMap,
+        pre_extract: Option<fn(&Path, &mut Vec<u8>, &mut diagnostics::LogWriter) -> PreExtract>,
+        ) -> ExtractLanguage {
+         ExtractLanguage {
+            prefix: prefix.to_string(),
+            language,
+            schema,
+            pre_extract,
+        }
+    }
+
+    pub fn run(self, files: Vec<String>) -> std::io::Result<()> {
+        lines
+            .par_iter()
+            .try_for_each(|line| {
+                let mut diagnostics_writer = diagnostics.logger();
+                let path = PathBuf::from(line).canonicalize()?;
+                let mut source = std::fs::read(&path)?;
+                let mut trap_writer = trap::Writer::new();
+
+                // Look up the languages that are registered for this file extension
+                let langs = path
+                    .extension()
+                    .and_then(|ext| self.languages.get(ext).or(self.default_language))
+                    .unwrap_or(vec![]);
+
+                let source_modified = false;
+
+                // Extract each language
+                for lang in langs {
+
+                    let pre_extract = lang.pre_extract(&path, &mut source, logger);
+                    source_modified = pre_extract.source_modified;
+
+                    extract(
+                        lang.language,
+                        lang.prefix,
+                        &lang.schema,
+                        &mut diagnostics_writer,
+                        &mut trap_writer,
+                        &path,
+                        &source,
+                        pre_extract.code_ranges
+                    )?;
+                }
+
+                // Copy/move archive files
+                let archive_file = path_for(self.source_archive_dir, &path, "");
+                if source_modified {
+                    std::fs::write(&archive_file, &source)?;
+                } else {
+                    std::fs::copy(&path, &archive_file)?;
+                }
+
+                // Write trap to file
+                write_trap(self.trap_dir, path, &trap_writer, self.trap_compression)
+    }
+
+    // Write "extras"
+    let path = PathBuf::from("extras");
+    let mut trap_writer = trap::Writer::new();
+    populate_empty_location(&mut trap_writer);
+    write_trap(self.trap_dir, path, &trap_writer, self.trap_compression)
+}
 
 pub fn populate_file(writer: &mut trap::Writer, absolute_path: &Path) -> trap::Label {
     let (file_label, fresh) =
