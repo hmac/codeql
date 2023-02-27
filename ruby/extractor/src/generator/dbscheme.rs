@@ -1,4 +1,4 @@
-use crate::ql;
+use crate:: generator::ql;
 use std::collections::BTreeSet as Set;
 use std::fmt;
 /// Represents a distinct entry in the database schema.

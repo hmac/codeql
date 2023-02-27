@@ -1,10 +1,10 @@
-mod dbscheme;
-mod language;
-mod ql;
-mod ql_gen;
+use crate::generator::dbscheme;
+use crate::generator::language::Language;
+use crate::generator::ql;
+use crate::generator::ql_gen;
+use crate::node_types;
 
 use clap::arg;
-use language::Language;
 use std::collections::BTreeMap as Map;
 use std::collections::BTreeSet as Set;
 use std::fs::File;

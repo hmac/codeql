@@ -1,12 +1,11 @@
 use crate::diagnostics;
 use crate::trap;
-use node_types::{EntryKind, Field, NodeTypeMap, Storage, TypeName};
-use std::collections::BTreeMap as Map;
-use std::collections::BTreeSet as Set;
-use std::collections::HashMap;
+use crate::node_types::{self,NodeTypeMap,TypeName, Field, EntryKind, Storage};
+use std::collections::{HashMap, BTreeMap as Map, BTreeSet as Set};
 use std::ffi::OsString;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use rayon::prelude::*;
 
 use tree_sitter::{Language, Node, Parser, Range, Tree};
 
@@ -15,17 +14,16 @@ pub struct ExtractLanguage {
     language: tree_sitter::Language,
     schema: node_types::NodeTypeMap,
     /// Optional pre-extraction processing of the source.
-    pre_extract: Option<fn(&Path, &mut Vec<u8>, &mut diagnostics::LogWriter) -> Option<PreExtract>,
+    pre_extract: Option<fn(&Path, &mut Vec<u8>, &mut diagnostics::LogWriter) -> Option<PreExtract>>,
 }
 
 pub struct Extractor {
-    /// List of files to be extracted.
-    file_list: Vec<String>,
-    languages: HashMap<OsString, Vec<ExtractLanguage>>,
-    default_language: Option<ExtractLanguage>
+    languages: HashMap<String, Vec<ExtractLanguage>>,
+    extensions: HashMap<OsString, String>,
     source_archive_dir: PathBuf,
     trap_dir: PathBuf,
     trap_compression: trap::Compression,
+    diagnostics: diagnostics::DiagnosticLoggers,
 }
 
 pub struct PreExtract {
@@ -37,34 +35,26 @@ pub struct PreExtract {
 }
 
 impl Extractor {
-    pub fn new(file_list: Vec<String>, source_archive_dir: AsRef<Path>, trap_dir: AsRef<Path>, trap_compression: trap::Compression) -> Self {
+    pub fn new(source_archive_dir: &Path, trap_dir: &Path, trap_compression: trap::Compression, diagnostics: diagnostics::DiagnosticLoggers) -> Self {
         Self {
-            file_list,
             languages: HashMap::new(),
-            default_language: None,
-            source_archive_dir: source_archive_dir.as_ref().to_path_buf(),
-            trap_dir: trap_dir.as_ref().to_path_buf(),
+            extensions: HashMap::new(),
+            source_archive_dir: source_archive_dir.to_path_buf(),
+            trap_dir: trap_dir.to_path_buf(),
             trap_compression,
+            diagnostics
         }
     }
 
     pub fn register_language(
         &mut self,
-        extension: String,
+        extension: &str,
         lang: ExtractLanguage,
     ) {
         self.languages
             .entry(extension.into())
             .or_insert(vec![])
-            .and_modify(|langs| langs.append(lang));
-    }
-
-    pub fn register_default_language(
-        &mut self,
-        extension: String,
-        lang: ExtractLanguage,
-    ) {
-        self.default_language = lang;
+            .push(lang);
     }
 
     pub fn build_language(
@@ -72,69 +62,158 @@ impl Extractor {
         prefix: &str,
         language: tree_sitter::Language,
         schema: node_types::NodeTypeMap,
-        pre_extract: Option<fn(&Path, &mut Vec<u8>, &mut diagnostics::LogWriter) -> PreExtract>,
-        ) -> ExtractLanguage {
-         ExtractLanguage {
-            prefix: prefix.to_string(),
-            language,
-            schema,
-            pre_extract,
+        pre_extract: Option<fn(&Path, &mut Vec<u8>, &mut diagnostics::LogWriter) -> Option<PreExtract>>,
+        ) -> ExtractLanguage
+    {
+        ExtractLanguage {
+           prefix: prefix.to_string(),
+           language,
+           schema,
+           pre_extract
         }
     }
 
+    pub fn for_each<F>(&self, files: Vec<String>, f: F)  -> Result<(), std::io::Error>
+        where F: Fn(&Path, &[u8], &mut diagnostics::LogWriter, &mut trap::Writer) -> Result<(), std::io::Error>,
+              {
+        files.par_iter().try_for_each(|line| {
+                let mut logger = self.diagnostics.logger();
+                let path = PathBuf::from(line).canonicalize()?;
+                let mut source = std::fs::read(&path)?;
+                let mut trap_writer = trap::Writer::new();
+
+                f(&path, &source, &mut logger, &mut trap_writer)
+        })
+    }
+
     pub fn run(self, files: Vec<String>) -> std::io::Result<()> {
-        lines
+        files
             .par_iter()
             .try_for_each(|line| {
-                let mut diagnostics_writer = diagnostics.logger();
+                let mut logger = self.diagnostics.logger();
                 let path = PathBuf::from(line).canonicalize()?;
                 let mut source = std::fs::read(&path)?;
                 let mut trap_writer = trap::Writer::new();
 
                 // Look up the languages that are registered for this file extension
-                let langs = path
-                    .extension()
-                    .and_then(|ext| self.languages.get(ext).or(self.default_language))
-                    .unwrap_or(vec![]);
+                match path.extension().and_then(|ext|self.languages.get(ext)) {
+                    None => {
+                        tracing::info!("skipping file, no registered language: {}", path.display());
+                        Ok(())
+                    },
+                    Some(langs) => {
+                        let mut source_modified = false;
 
-                let source_modified = false;
+                        // Extract each language
+                        for lang in langs {
 
-                // Extract each language
-                for lang in langs {
+                            let code_ranges = match lang.pre_extract {
+                                Some(func) => {
+                                    match func(&path, &mut source, &mut logger) {
+                                        Some(result) => {
+                                            source_modified = result.source_modified;
+                                            result.code_ranges
+                                        },
+                                        None => vec![]
+                                    }
+                                },
+                                None => vec![]
+                            };
 
-                    let pre_extract = lang.pre_extract(&path, &mut source, logger);
-                    source_modified = pre_extract.source_modified;
 
-                    extract(
-                        lang.language,
-                        lang.prefix,
-                        &lang.schema,
-                        &mut diagnostics_writer,
-                        &mut trap_writer,
-                        &path,
-                        &source,
-                        pre_extract.code_ranges
-                    )?;
+                            extract(
+                                lang.language,
+                                &lang.prefix,
+                                &lang.schema,
+                                &mut logger,
+                                &mut trap_writer,
+                                &path,
+                                &source,
+                                &code_ranges
+                            )?;
+                        }
+
+                        // Copy/move archive files
+                        let archive_file = path_for(&self.source_archive_dir, &path, "");
+                        if source_modified {
+                            std::fs::write(&archive_file, &source)?;
+                        } else {
+                            std::fs::copy(&path, &archive_file)?;
+                        }
+
+                        // Write trap to file
+                        write_trap(&self.trap_dir, path, &trap_writer, self.trap_compression)
                 }
+            }
 
-                // Copy/move archive files
-                let archive_file = path_for(self.source_archive_dir, &path, "");
-                if source_modified {
-                    std::fs::write(&archive_file, &source)?;
-                } else {
-                    std::fs::copy(&path, &archive_file)?;
-                }
+        });
 
-                // Write trap to file
-                write_trap(self.trap_dir, path, &trap_writer, self.trap_compression)
+        // Write "extras"
+        let path = PathBuf::from("extras");
+        let mut trap_writer = trap::Writer::new();
+        populate_empty_location(&mut trap_writer);
+        write_trap(&self.trap_dir, path, &trap_writer, self.trap_compression)
+    }
+}
+
+    fn write_trap(
+        trap_dir: &Path,
+        path: PathBuf,
+        trap_writer: &trap::Writer,
+        trap_compression: trap::Compression,
+    ) -> std::io::Result<()> {
+        let trap_file = path_for(trap_dir, &path, trap_compression.extension());
+        std::fs::create_dir_all(&trap_file.parent().unwrap())?;
+        trap_writer.write_to_file(&trap_file, trap_compression)
     }
 
-    // Write "extras"
-    let path = PathBuf::from("extras");
-    let mut trap_writer = trap::Writer::new();
-    populate_empty_location(&mut trap_writer);
-    write_trap(self.trap_dir, path, &trap_writer, self.trap_compression)
-}
+    fn path_for(dir: &Path, path: &Path, ext: &str) -> PathBuf {
+        let mut result = PathBuf::from(dir);
+        for component in path.components() {
+            match component {
+                std::path::Component::Prefix(prefix) => match prefix.kind() {
+                    std::path::Prefix::Disk(letter) | std::path::Prefix::VerbatimDisk(letter) => {
+                        result.push(format!("{}_", letter as char))
+                    }
+                    std::path::Prefix::Verbatim(x) | std::path::Prefix::DeviceNS(x) => {
+                        result.push(x);
+                    }
+                    std::path::Prefix::UNC(server, share)
+                    | std::path::Prefix::VerbatimUNC(server, share) => {
+                        result.push("unc");
+                        result.push(server);
+                        result.push(share);
+                    }
+                },
+                std::path::Component::RootDir => {
+                    // skip
+                }
+                std::path::Component::Normal(_) => {
+                    result.push(component);
+                }
+                std::path::Component::CurDir => {
+                    // skip
+                }
+                std::path::Component::ParentDir => {
+                    result.pop();
+                }
+            }
+        }
+        if !ext.is_empty() {
+            match result.extension() {
+                Some(x) => {
+                    let mut new_ext = x.to_os_string();
+                    new_ext.push(".");
+                    new_ext.push(ext);
+                    result.set_extension(new_ext);
+                }
+                None => {
+                    result.set_extension(ext);
+                }
+            }
+        }
+        result
+    }
 
 pub fn populate_file(writer: &mut trap::Writer, absolute_path: &Path) -> trap::Label {
     let (file_label, fresh) =

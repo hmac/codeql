@@ -1,21 +1,19 @@
-mod diagnostics;
-mod extractor;
-mod trap;
-
 #[macro_use]
 extern crate lazy_static;
 extern crate num_cpus;
 
 use clap::arg;
 use encoding::{self};
-use rayon::prelude::*;
 use std::borrow::Cow;
 use std::fs;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use tree_sitter::{Language, Parser, Range};
 
-use crate::extractor::Extractor;
+use ruby_extractor::extractor::{PreExtract,Extractor};
+use ruby_extractor::diagnostics;
+use ruby_extractor::node_types;
+use ruby_extractor::trap;
 
 /**
  * Gets the number of threads the extractor should use, by reading the
@@ -142,11 +140,11 @@ fn main() -> std::io::Result<()> {
     let lines = lines?;
 
     // Look up tree-sitter kind ids now, to avoid string comparisons when scanning ERB files.
-    let erb_directive_id = erb.id_for_node_kind("directive", true);
-    let erb_output_directive_id = erb.id_for_node_kind("output_directive", true);
-    let erb_code_id = erb.id_for_node_kind("code", true);
+    let erb_directive_id = lang_erb.id_for_node_kind("directive", true);
+    let erb_output_directive_id = lang_erb.id_for_node_kind("output_directive", true);
+    let erb_code_id = lang_erb.id_for_node_kind("code", true);
 
-    fn pre_extract_erb(path: &Path, source: &mut Vec<u8>, logger: &mut diagnostics::LogWriter) -> PreExtract {
+    let pre_extract_erb = |path: &Path, source: &mut Vec<u8>, logger: &mut diagnostics::LogWriter| -> PreExtract {
         let mut source_modified = false;
 
         tracing::info!("scanning: {}", path.display());
@@ -165,25 +163,32 @@ fn main() -> std::io::Result<()> {
         }
 
         PreExtract { code_ranges, source_modified }
-    }
+    };
 
     fn pre_extract_ruby(path: &Path, source: &mut Vec<u8>, logger: &mut diagnostics::LogWriter) -> PreExtract {
-        let source_modified = normalise_ruby_source_encoding(path, logger);
+        let source_modified = normalise_ruby_source_encoding(logger, path, source);
         PreExtract { source_modified, code_ranges: vec![] }
     }
 
-    let mut extractor = Extractor::new(lines.clone());
-    let extract_ruby = extractor.build_language("ruby", lang_ruby, schema, Some(pre_extract_ruby));
-    let extract_erb = extractor.build_language("erb", lang_erb, erb_schema, Some(pre_extract_erb));
+    let mut extractor = Extractor::new();
+    let extract_ruby = extractor.build_language("ruby", lang_ruby, schema_ruby, Some(pre_extract_ruby));
+    let extract_erb = extractor.build_language("erb", lang_erb, schema_erb, Some(pre_extract_erb));
 
     extractor.register_default_language("rb", extract_ruby.clone());
     extractor.register_language("erb", extract_ruby.clone());
     extractor.register_language("erb", extract_erb);
 
-    extractor.run(lines)?;
+    // extractor.run(lines);
+
+    extractor.for_each(|path, source, logger, trap_writer| {
+        if Some("erb") = path.extension() {
+            extract_erb.extract(path, source, logger, trap_writer);
+        }
+        extract_ruby.extract(path, source, logger, trap_writer);
+    });
 }
 
-fn normalise_ruby_source_encoding(source: &mut Vec<u8>, logger: &mut diagnostics::LogWriter) -> bool {
+fn normalise_ruby_source_encoding(logger: &mut diagnostics::LogWriter, path: &Path, source: &mut Vec<u8>) -> bool {
     let mut source_modified = false;
     if let Some(encoding_name) = scan_coding_comment(&source) {
 
@@ -202,11 +207,11 @@ fn normalise_ruby_source_encoding(source: &mut Vec<u8>, logger: &mut diagnostics
                     {
                         Ok(converted) => {
                             source_modified = true;
-                            source = converted.as_bytes().to_owned()
+                            source = &mut converted.as_bytes().to_owned()
                         }
                         Err(msg) => {
-                            diagnostics_writer.write(
-                                diagnostics_writer
+                            logger.write(
+                                logger
                                     .message(
                                         "character-encoding-error",
                                         "Character encoding error",
@@ -224,8 +229,8 @@ fn normalise_ruby_source_encoding(source: &mut Vec<u8>, logger: &mut diagnostics
                     }
                 }
             } else {
-                diagnostics_writer.write(
-                    diagnostics_writer
+                logger.write(
+                    logger
                         .message("character-encoding-error", "Character encoding error")
                         .text(&format!(
                             "{}: unknown character encoding: '{}'",
@@ -242,16 +247,6 @@ fn normalise_ruby_source_encoding(source: &mut Vec<u8>, logger: &mut diagnostics
     source_modified
 }
 
-fn write_trap(
-    trap_dir: &Path,
-    path: PathBuf,
-    trap_writer: &trap::Writer,
-    trap_compression: trap::Compression,
-) -> std::io::Result<()> {
-    let trap_file = path_for(trap_dir, &path, trap_compression.extension());
-    std::fs::create_dir_all(&trap_file.parent().unwrap())?;
-    trap_writer.write_to_file(&trap_file, trap_compression)
-}
 
 fn scan_erb(
     erb: Language,
@@ -293,54 +288,6 @@ fn scan_erb(
         });
     }
     (result, line_breaks)
-}
-
-fn path_for(dir: &Path, path: &Path, ext: &str) -> PathBuf {
-    let mut result = PathBuf::from(dir);
-    for component in path.components() {
-        match component {
-            std::path::Component::Prefix(prefix) => match prefix.kind() {
-                std::path::Prefix::Disk(letter) | std::path::Prefix::VerbatimDisk(letter) => {
-                    result.push(format!("{}_", letter as char))
-                }
-                std::path::Prefix::Verbatim(x) | std::path::Prefix::DeviceNS(x) => {
-                    result.push(x);
-                }
-                std::path::Prefix::UNC(server, share)
-                | std::path::Prefix::VerbatimUNC(server, share) => {
-                    result.push("unc");
-                    result.push(server);
-                    result.push(share);
-                }
-            },
-            std::path::Component::RootDir => {
-                // skip
-            }
-            std::path::Component::Normal(_) => {
-                result.push(component);
-            }
-            std::path::Component::CurDir => {
-                // skip
-            }
-            std::path::Component::ParentDir => {
-                result.pop();
-            }
-        }
-    }
-    if !ext.is_empty() {
-        match result.extension() {
-            Some(x) => {
-                let mut new_ext = x.to_os_string();
-                new_ext.push(".");
-                new_ext.push(ext);
-                result.set_extension(new_ext);
-            }
-            None => {
-                result.set_extension(ext);
-            }
-        }
-    }
-    result
 }
 
 fn skip_space(content: &[u8], index: usize) -> usize {
