@@ -9,19 +9,14 @@ use std::path::{Path, PathBuf};
 
 use tree_sitter::{Language, Node, Parser, Range, Tree};
 
-type PreExtractFn =
-    Box<dyn FnMut(&Path, &mut Vec<u8>, &mut diagnostics::LogWriter) -> Option<PreExtract>>;
 
 pub struct ExtractLanguage {
     prefix: String,
     language: tree_sitter::Language,
     schema: node_types::NodeTypeMap,
-    /// Optional pre-extraction processing of the source.
-    pre_extract: Option<PreExtractFn>,
 }
 
-// TODO:
-// store `ExtractLanguage`s in a Vec, and then have
+// TODO: store `ExtractLanguage`s in a Vec, and then have
 //   extensions: BTreeMap<OsString, u8>
 // where the u8 is an index into the Vec<ExtractLanguage>
 pub struct Extractor {
@@ -33,13 +28,6 @@ pub struct Extractor {
     diagnostics: diagnostics::DiagnosticLoggers,
 }
 
-pub struct PreExtract {
-    /// Empty if the full file should be extracted.
-    /// Otherwise, just the given ranges should be extracted.
-    pub code_ranges: Vec<Range>,
-    /// `true` if the pre-extract step has modified the source.
-    pub source_modified: bool,
-}
 
 impl Extractor {
     pub fn new(
@@ -74,46 +62,78 @@ impl Extractor {
         prefix: &str,
         language: tree_sitter::Language,
         schema: node_types::NodeTypeMap,
-        pre_extract: Option<PreExtractFn>
-        
     ) -> ExtractLanguage {
         ExtractLanguage {
             prefix: prefix.to_string(),
             language,
             schema,
-            pre_extract,
         }
     }
 
+    /// A flexible interface to the extractor.
+    /// Takes a list of files to extract and a function to extract each file.
+    /// The function should perform any pre-processing necessary and then call `extractor::extract`
+    /// to extract the file.
+    /// It should return the file source and a boolean to indicate if it has modified the source.
     pub fn for_each<F>(self, files: Vec<String>, f: F) -> Result<(), std::io::Error>
     where
         F: Fn(
                 &Path,
-                &[u8],
+                Vec<u8>,
                 &mut diagnostics::LogWriter,
                 &mut trap::Writer,
-            ) -> Result<(), std::io::Error>
-            + Sync + Send
+            ) -> Result<(Vec<u8>, bool), std::io::Error>
+            + Sync
+            + Send,
     {
         let diagnostics = self.diagnostics;
-        files.par_iter().try_for_each(move|line| {
+        let source_archive_dir = self.source_archive_dir;
+
+        let trap_dir = self.trap_dir;
+        let trap_compression = self.trap_compression;
+
+        // These two values are used later, so we need copies of them
+        let trap_dir_copy = trap_dir.clone();
+        let trap_compression_copy = trap_compression.clone();
+
+        files.par_iter().try_for_each(move |line| {
             let mut logger = diagnostics.logger();
             let path = PathBuf::from(line).canonicalize()?;
-            let mut source = std::fs::read(&path)?;
+            let source = std::fs::read(&path)?;
             let mut trap_writer = trap::Writer::new();
 
-            f(&path, &source, &mut logger, &mut trap_writer)
-        })
+            let (source, source_modified) = f(&path, source, &mut logger, &mut trap_writer)?;
+
+            // Copy/move archive files
+            let archive_file = path_for(&source_archive_dir, &path, "");
+            if source_modified {
+                std::fs::write(&archive_file, &source)?;
+            } else {
+                std::fs::copy(&path, &archive_file)?;
+            }
+
+            // Write trap to file
+            write_trap(&trap_dir, path, &trap_writer, trap_compression)
+        })?;
+
+        // Write "extras"
+        let path = PathBuf::from("extras");
+        let mut trap_writer = trap::Writer::new();
+        populate_empty_location(&mut trap_writer);
+        write_trap(&trap_dir_copy, path, &trap_writer, trap_compression_copy)
     }
 
+    /// A simple interface to the extractor.
+    /// Takes a list of file names to extract.
+    /// For each file, the languages which match the extension will be run.
+    /// No pre-processing is performed.
     pub fn run(self, files: Vec<String>) -> std::io::Result<()> {
-        let mut logger = self.diagnostics.logger();
+        let diagnostics = self.diagnostics;
         let extensions = self.extensions.clone();
         let languages = self.languages;
         let source_archive_dir = self.source_archive_dir;
         let trap_dir = self.trap_dir;
         let trap_compression = self.trap_compression;
-
 
         // These two values are used later, so we need copies of them
         let trap_dir_copy = trap_dir.clone();
@@ -121,8 +141,9 @@ impl Extractor {
 
         files.par_iter().try_for_each(move |line| {
             let path = PathBuf::from(line).canonicalize()?;
-            let mut source = std::fs::read(&path)?;
+            let source = std::fs::read(&path)?;
             let mut trap_writer = trap::Writer::new();
+            let mut logger = diagnostics.logger();
 
             // Look up the languages that are registered for this file extension
             match path.extension().and_then(|ext| extensions.get(ext)) {
@@ -131,45 +152,28 @@ impl Extractor {
                     Ok(())
                 }
                 Some(lang_prefixes) => {
-                    let mut source_modified = false;
-
                     // Extract each language
-                    // for lang_prefix in lang_prefixes {
-                    //     let lang =
-                    //         languages
-                    //         .get(lang_prefix)
-                    //         .expect("Unknown language prefix {lang_prefix}");
+                    for lang_prefix in lang_prefixes {
+                        let lang =
+                            languages
+                            .get(lang_prefix)
+                            .expect("Unknown language prefix {lang_prefix}");
 
-                        // let code_ranges = match lang.pre_extract {
-                        //     Some(func) => match func(&path, &mut source, &mut logger) {
-                        //         Some(result) => {
-                        //             source_modified = result.source_modified;
-                        //             result.code_ranges
-                        //         }
-                        //         None => vec![],
-                        //     },
-                        //     None => vec![],
-                        // };
-
-                        // extract(
-                        //     lang.language,
-                        //     &lang.prefix,
-                        //     &lang.schema,
-                        //     &mut logger,
-                        //     &mut trap_writer,
-                        //     &path,
-                        //     &source,
-                        //     &code_ranges,
-                        // )?;
-                    // }
+                    extract(
+                        lang.language,
+                        &lang.prefix,
+                        &lang.schema,
+                        &mut logger,
+                        &mut trap_writer,
+                        &path,
+                        &source,
+                        &[],
+                    )?;
+                    }
 
                     // Copy/move archive files
                     let archive_file = path_for(&source_archive_dir, &path, "");
-                    if source_modified {
-                        std::fs::write(&archive_file, &source)?;
-                    } else {
-                        std::fs::copy(&path, &archive_file)?;
-                    }
+                    std::fs::copy(&path, &archive_file)?;
 
                     // Write trap to file
                     write_trap(&trap_dir, path, &trap_writer, trap_compression)

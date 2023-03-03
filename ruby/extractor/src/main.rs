@@ -3,15 +3,15 @@ extern crate lazy_static;
 extern crate num_cpus;
 
 use clap::arg;
-use encoding::{self};
+use encoding;
 use std::borrow::Cow;
 use std::fs;
 use std::io::BufRead;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tree_sitter::{Language, Parser, Range};
 
 use ruby_extractor::diagnostics;
-use ruby_extractor::extractor::{Extractor, PreExtract};
+use ruby_extractor::extractor::{self, Extractor};
 use ruby_extractor::node_types;
 use ruby_extractor::trap;
 
@@ -144,120 +144,103 @@ fn main() -> std::io::Result<()> {
     let erb_output_directive_id = lang_erb.id_for_node_kind("output_directive", true);
     let erb_code_id = lang_erb.id_for_node_kind("code", true);
 
-    let pre_extract_erb = move |path: &Path,
-                           source: &mut Vec<u8>,
-                           logger: &mut diagnostics::LogWriter|
-     -> Option<PreExtract> {
-        let mut source_modified = false;
+    let extractor = Extractor::new(&src_archive_dir, &trap_dir, trap_compression, diagnostics);
 
-        tracing::info!("scanning: {}", path.display());
-        let (code_ranges, line_breaks) = scan_erb(
-            lang_erb,
-            source,
-            erb_directive_id,
-            erb_output_directive_id,
-            erb_code_id,
-        );
-        for i in line_breaks {
-            if i < source.len() {
-                source_modified = true;
-                source[i] = b'\n';
+    extractor.for_each(lines, |path, mut source, logger, trap_writer| {
+        let mut code_ranges = vec![];
+        let mut needs_conversion = false;
+
+        if path.extension().map_or(false, |x| x == "erb") {
+            tracing::info!("scanning: {}", path.display());
+            extractor::extract(
+                lang_erb,
+                "erb",
+                &schema_erb,
+                logger,
+                trap_writer,
+                &path,
+                &source,
+                &[],
+            )?;
+            let (ranges, line_breaks) = scan_erb(
+                lang_erb,
+                &source,
+                erb_directive_id,
+                erb_output_directive_id,
+                erb_code_id,
+            );
+            for i in line_breaks {
+                if i < source.len() {
+                    source[i] = b'\n';
+                }
             }
-        }
-
-        Some(PreExtract {
-            code_ranges,
-            source_modified,
-        })
-    };
-
-    fn pre_extract_ruby(
-        path: &Path,
-        source: &mut Vec<u8>,
-        logger: &mut diagnostics::LogWriter,
-    ) -> Option<PreExtract> {
-        let source_modified = normalise_ruby_source_encoding(logger, path, source);
-        Some(PreExtract {
-            source_modified,
-            code_ranges: vec![],
-        })
-    }
-
-    let mut extractor = Extractor::new(&src_archive_dir, &trap_dir, trap_compression, diagnostics);
-    let extract_ruby =
-        extractor.build_language("ruby", lang_ruby, schema_ruby, Some(Box::new(pre_extract_ruby)));
-    let extract_erb = extractor.build_language("erb", lang_erb, schema_erb, Some(Box::new(pre_extract_erb)));
-
-    extractor.register_language(extract_ruby);
-    extractor.register_language(extract_erb);
-
-    extractor.register_extension("rb", "rb");
-    extractor.register_extension("erb", "rb");
-    extractor.register_extension("erb", "erb");
-
-    // extractor.run(lines);
-
-    extractor.for_each(lines, |path, source, logger, trap_writer| {
-        // todo
-        Ok(())
-    })
-}
-
-fn normalise_ruby_source_encoding(
-    logger: &mut diagnostics::LogWriter,
-    path: &Path,
-    source: &mut Vec<u8>,
-) -> bool {
-    let mut source_modified = false;
-    if let Some(encoding_name) = scan_coding_comment(&source) {
-        // If the input is already UTF-8 then there is no need to recode the source
-        // If the declared encoding is 'binary' or 'ascii-8bit' then it is not clear how
-        // to interpret characters. In this case it is probably best to leave the input
-        // unchanged.
-        if !encoding_name.eq_ignore_ascii_case("utf-8")
-            && !encoding_name.eq_ignore_ascii_case("ascii-8bit")
-            && !encoding_name.eq_ignore_ascii_case("binary")
-        {
-            if let Some(encoding) = encoding_from_name(&encoding_name) {
-                if encoding.whatwg_name().unwrap_or_default() != "utf-8" {
-                    match encoding.decode(&source, encoding::types::DecoderTrap::Replace) {
-                        Ok(converted) => {
-                            source_modified = true;
-                            *source = converted.as_bytes().to_owned();
+            code_ranges = ranges;
+        } else {
+            if let Some(encoding_name) = scan_coding_comment(&source) {
+                // If the input is already UTF-8 then there is no need to recode the source
+                // If the declared encoding is 'binary' or 'ascii-8bit' then it is not clear how
+                // to interpret characters. In this case it is probably best to leave the input
+                // unchanged.
+                if !encoding_name.eq_ignore_ascii_case("utf-8")
+                    && !encoding_name.eq_ignore_ascii_case("ascii-8bit")
+                    && !encoding_name.eq_ignore_ascii_case("binary")
+                {
+                    if let Some(encoding) = encoding_from_name(&encoding_name) {
+                        needs_conversion = encoding.whatwg_name().unwrap_or_default() != "utf-8";
+                        if needs_conversion {
+                            match encoding.decode(&source, encoding::types::DecoderTrap::Replace) {
+                                Ok(str) => {
+                                    source = str.as_bytes().to_owned();
+                                }
+                                Err(msg) => {
+                                    needs_conversion = false;
+                                    logger.write(
+                                        logger
+                                            .message(
+                                                "character-encoding-error",
+                                                "Character encoding error",
+                                            )
+                                            .text(&format!(
+                                                "{}: character decoding failure: {} ({})",
+                                                &path.to_string_lossy(),
+                                                msg,
+                                                &encoding_name
+                                            ))
+                                            .status_page()
+                                            .severity(diagnostics::Severity::Warning),
+                                    );
+                                }
+                            }
                         }
-                        Err(msg) => {
-                            logger.write(
-                                logger
-                                    .message("character-encoding-error", "Character encoding error")
-                                    .text(&format!(
-                                        "{}: character decoding failure: {} ({})",
-                                        &path.to_string_lossy(),
-                                        msg,
-                                        &encoding_name
-                                    ))
-                                    .status_page()
-                                    .severity(diagnostics::Severity::Warning),
-                            );
-                        }
+                    } else {
+                        logger.write(
+                            logger
+                                .message("character-encoding-error", "Character encoding error")
+                                .text(&format!(
+                                    "{}: unknown character encoding: '{}'",
+                                    &path.to_string_lossy(),
+                                    &encoding_name
+                                ))
+                                .status_page()
+                                .severity(diagnostics::Severity::Warning),
+                        );
                     }
                 }
-            } else {
-                logger.write(
-                    logger
-                        .message("character-encoding-error", "Character encoding error")
-                        .text(&format!(
-                            "{}: unknown character encoding: '{}'",
-                            &path.to_string_lossy(),
-                            &encoding_name
-                        ))
-                        .status_page()
-                        .severity(diagnostics::Severity::Warning),
-                );
             }
         }
-    }
+        extractor::extract(
+            lang_ruby,
+            "ruby",
+            &schema_ruby,
+            logger,
+            trap_writer,
+            &path,
+            &source,
+            &code_ranges,
+        )?;
 
-    source_modified
+        Ok((source, needs_conversion))
+    })
 }
 
 fn scan_erb(
