@@ -10,10 +10,10 @@ use std::io::BufRead;
 use std::path::PathBuf;
 use tree_sitter::{Language, Parser, Range};
 
-use ruby_extractor::diagnostics;
-use ruby_extractor::extractor::{self, Extractor};
-use ruby_extractor::node_types;
-use ruby_extractor::trap;
+use codeql_extractor::diagnostics;
+use codeql_extractor::extractor::{self, Extractor};
+use codeql_extractor::node_types;
+use codeql_extractor::trap;
 
 /**
  * Gets the number of threads the extractor should use, by reading the

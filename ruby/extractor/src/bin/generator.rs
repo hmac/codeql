@@ -1,8 +1,8 @@
-use ruby_extractor::generator::dbscheme;
-use ruby_extractor::generator::language::Language;
-use ruby_extractor::generator::ql;
-use ruby_extractor::generator::ql_gen;
-use ruby_extractor::node_types;
+use codeql_extractor::generator::dbscheme;
+use codeql_extractor::generator::language::Language;
+use codeql_extractor::generator::ql;
+use codeql_extractor::generator::ql_gen;
+use codeql_extractor::node_types;
 
 use clap::arg;
 use std::collections::BTreeMap as Map;
