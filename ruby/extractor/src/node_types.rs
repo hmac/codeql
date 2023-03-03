@@ -8,27 +8,27 @@ use std::fs;
 /// A lookup table from TypeName to Entry.
 pub type NodeTypeMap = BTreeMap<TypeName, Entry>;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Entry {
     pub dbscheme_name: String,
     pub ql_class_name: String,
     pub kind: EntryKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EntryKind {
     Union { members: Set<TypeName> },
     Table { name: String, fields: Vec<Field> },
     Token { kind_id: usize },
 }
 
-#[derive(Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Clone)]
 pub struct TypeName {
     pub kind: String,
     pub named: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FieldTypeInfo {
     /// The field has a single type.
     Single(TypeName),
@@ -47,7 +47,7 @@ pub enum FieldTypeInfo {
     ReservedWordInt(BTreeMap<String, (usize, String)>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Field {
     pub parent: TypeName,
     pub type_info: FieldTypeInfo,
@@ -66,7 +66,7 @@ fn name_for_field_or_child(name: &Option<String>) -> String {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Storage {
     /// the field is stored as a column in the parent table
     Column { name: String },

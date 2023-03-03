@@ -1,8 +1,8 @@
-use crate::generator::dbscheme;
-use crate::generator::language::Language;
-use crate::generator::ql;
-use crate::generator::ql_gen;
-use crate::node_types;
+use ruby_extractor::generator::dbscheme;
+use ruby_extractor::generator::language::Language;
+use ruby_extractor::generator::ql;
+use ruby_extractor::generator::ql_gen;
+use ruby_extractor::node_types;
 
 use clap::arg;
 use std::collections::BTreeMap as Map;
