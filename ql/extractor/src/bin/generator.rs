@@ -1,9 +1,9 @@
-mod dbscheme;
-mod language;
-mod ql;
-mod ql_gen;
+use codeql_extractor::generator::dbscheme;
+use codeql_extractor::generator::language::Language;
+use codeql_extractor::generator::ql;
+use codeql_extractor::generator::ql_gen;
+use codeql_extractor::node_types;
 
-use language::Language;
 use std::collections::BTreeMap as Map;
 use std::collections::BTreeSet as Set;
 use std::fs::File;
