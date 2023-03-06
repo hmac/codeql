@@ -2,7 +2,7 @@ use crate::diagnostics;
 use crate::node_types::{self, EntryKind, Field, NodeTypeMap, Storage, TypeName};
 use crate::trap;
 use rayon::prelude::*;
-use std::collections::{BTreeMap as Map, BTreeSet as Set, HashMap};
+use std::collections::{BTreeMap as Map, BTreeSet as Set};
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -15,12 +15,14 @@ pub struct ExtractLanguage {
     schema: node_types::NodeTypeMap,
 }
 
-// TODO: store `ExtractLanguage`s in a Vec, and then have
-//   extensions: BTreeMap<OsString, u8>
-// where the u8 is an index into the Vec<ExtractLanguage>
+/// An opaque type representing a language registered with the extractor.
+/// Under the hood, this is an index into the `languages` vector.
+#[derive(Clone, Copy)]
+pub struct LanguageHandle(usize);
+
 pub struct Extractor {
-    languages: HashMap<String, ExtractLanguage>,
-    extensions: HashMap<OsString, Vec<String>>,
+    languages: Vec<ExtractLanguage>,
+    extensions: Map<OsString, Vec<LanguageHandle>>,
     source_archive_dir: PathBuf,
     trap_dir: PathBuf,
     trap_compression: trap::Compression,
@@ -35,8 +37,8 @@ impl Extractor {
         diagnostics: diagnostics::DiagnosticLoggers,
     ) -> Self {
         Self {
-            languages: HashMap::new(),
-            extensions: HashMap::new(),
+            languages: vec![],
+            extensions: Map::new(),
             source_archive_dir: source_archive_dir.to_path_buf(),
             trap_dir: trap_dir.to_path_buf(),
             trap_compression,
@@ -44,28 +46,26 @@ impl Extractor {
         }
     }
 
-    pub fn register_language(&mut self, lang: ExtractLanguage) {
-        self.languages.insert(lang.prefix.clone(), lang);
-    }
-
-    pub fn register_extension(&mut self, extension: &str, prefix: &str) {
+    pub fn register_extension(&mut self, extension: &str, handle: LanguageHandle) {
         self.extensions
             .entry(extension.into())
             .or_insert(vec![])
-            .push(prefix.to_string());
+            .push(handle);
     }
 
-    pub fn build_language(
-        &self,
+    pub fn register_language(
+        &mut self,
         prefix: &str,
         language: tree_sitter::Language,
         schema: node_types::NodeTypeMap,
-    ) -> ExtractLanguage {
-        ExtractLanguage {
+    ) -> LanguageHandle {
+        let lang = ExtractLanguage {
             prefix: prefix.to_string(),
             language,
             schema,
-        }
+        };
+        self.languages.push(lang);
+        LanguageHandle(self.languages.len() - 1)
     }
 
     /// A flexible interface to the extractor.
@@ -149,10 +149,8 @@ impl Extractor {
                 }
                 Some(lang_prefixes) => {
                     // Extract each language
-                    for lang_prefix in lang_prefixes {
-                        let lang = languages
-                            .get(lang_prefix)
-                            .expect("Unknown language prefix {lang_prefix}");
+                    for LanguageHandle(index) in lang_prefixes {
+                        let lang = &languages[*index];
 
                         extract(
                             lang.language,

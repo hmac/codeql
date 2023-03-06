@@ -2,7 +2,13 @@ use std::fs;
 use std::io::BufRead;
 use std::path::PathBuf;
 
-use codeql_extractor::{ generator::{generate, language::Language}, extractor::Extractor, diagnostics, node_types, cli::{GenerateArgs, ExtractArgs, Command}};
+use codeql_extractor::{
+    cli::{Command, ExtractArgs, GenerateArgs},
+    diagnostics,
+    extractor::Extractor,
+    generator::{generate, language::Language},
+    node_types,
+};
 
 fn main() -> std::io::Result<()> {
     tracing_subscriber::fmt()
@@ -39,44 +45,50 @@ fn run_extract(args: ExtractArgs) -> std::io::Result<()> {
         .unwrap();
 
     let file_list = fs::File::open(args.file_list)?;
-
-    let language = tree_sitter_ql::language();
-    let dbscheme = tree_sitter_ql_dbscheme::language();
-    let yaml = tree_sitter_ql_yaml::language();
-    let blame = tree_sitter_blame::language();
-    let json = tree_sitter_json::language();
-    let schema = node_types::read_node_types_str("ql", tree_sitter_ql::NODE_TYPES)?;
-    let dbscheme_schema =
-        node_types::read_node_types_str("dbscheme", tree_sitter_ql_dbscheme::NODE_TYPES)?;
-    let yaml_schema = node_types::read_node_types_str("yaml", tree_sitter_ql_yaml::NODE_TYPES)?;
-    let blame_schema = node_types::read_node_types_str("blame", tree_sitter_blame::NODE_TYPES)?;
-    let json_schema = node_types::read_node_types_str("json", tree_sitter_json::NODE_TYPES)?;
-
     let lines: std::io::Result<Vec<String>> = std::io::BufReader::new(file_list).lines().collect();
     let lines = lines?;
 
-    let mut extractor = Extractor::new(&args.source_archive_dir, &args.output_dir, args.codeql_trap_compression, diagnostics);
+    let mut extractor = Extractor::new(
+        &args.source_archive_dir,
+        &args.output_dir,
+        args.codeql_trap_compression,
+        diagnostics,
+    );
 
-    let lang_dbscheme = extractor.build_language("dbscheme", dbscheme, dbscheme_schema);
-    let lang_yaml = extractor.build_language("yaml", yaml, yaml_schema);
-    let lang_json = extractor.build_language("json", json, json_schema);
-    let lang_blame = extractor.build_language("blame", blame, blame_schema);
-    let lang_ql = extractor.build_language("ql", language, schema);
+    let ql = extractor.register_language(
+        "ql",
+        tree_sitter_ql::language(),
+        node_types::read_node_types_str("ql", tree_sitter_ql::NODE_TYPES)?,
+    );
+    let dbscheme = extractor.register_language(
+        "dbscheme",
+        tree_sitter_ql_dbscheme::language(),
+        node_types::read_node_types_str("dbscheme", tree_sitter_ql_dbscheme::NODE_TYPES)?,
+    );
+    let yaml = extractor.register_language(
+        "yaml",
+        tree_sitter_ql_yaml::language(),
+        node_types::read_node_types_str("yaml", tree_sitter_ql_yaml::NODE_TYPES)?,
+    );
+    let json = extractor.register_language(
+        "json",
+        tree_sitter_json::language(),
+        node_types::read_node_types_str("json", tree_sitter_json::NODE_TYPES)?,
+    );
+    let blame = extractor.register_language(
+        "blame",
+        tree_sitter_blame::language(),
+        node_types::read_node_types_str("blame", tree_sitter_blame::NODE_TYPES)?,
+    );
 
-    extractor.register_language(lang_dbscheme);
-    extractor.register_language(lang_yaml);
-    extractor.register_language(lang_json);
-    extractor.register_language(lang_blame);
-    extractor.register_language(lang_ql);
-
-    extractor.register_extension("dbscheme", "dbscheme");
-    extractor.register_extension("yml", "yaml");
-    extractor.register_extension("json", "json");
-    extractor.register_extension("jsonl", "json");
-    extractor.register_extension("jsonc", "json");
-    extractor.register_extension("blame", "blame");
-    extractor.register_extension("ql", "ql");
-    extractor.register_extension("qll", "ql");
+    extractor.register_extension("ql", ql);
+    extractor.register_extension("qll", ql);
+    extractor.register_extension("dbscheme", dbscheme);
+    extractor.register_extension("yml", yaml);
+    extractor.register_extension("json", json);
+    extractor.register_extension("jsonl", json);
+    extractor.register_extension("jsonc", json);
+    extractor.register_extension("blame", blame);
 
     extractor.run(lines)
 }
@@ -109,8 +121,8 @@ fn run_generate(args: GenerateArgs) -> std::io::Result<()> {
 }
 
 fn run_autobuild() -> std::io::Result<()> {
-    use std::process::Command;
     use std::env;
+    use std::process::Command;
 
     let dist = env::var("CODEQL_DIST").expect("CODEQL_DIST not set");
     let db = env::var("CODEQL_EXTRACTOR_QL_WIP_DATABASE")
