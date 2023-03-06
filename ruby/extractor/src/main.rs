@@ -1,45 +1,13 @@
 #[macro_use]
 extern crate lazy_static;
-extern crate num_cpus;
 
-use clap::arg;
 use encoding;
 use std::borrow::Cow;
 use std::fs;
 use std::io::BufRead;
-use std::path::PathBuf;
 use tree_sitter::{Language, Parser, Range};
 
-use codeql_extractor::diagnostics;
-use codeql_extractor::extractor::{self, Extractor};
-use codeql_extractor::node_types;
-use codeql_extractor::trap;
-
-/**
- * Gets the number of threads the extractor should use, by reading the
- * CODEQL_THREADS environment variable and using it as described in the
- * extractor spec:
- *
- * "If the number is positive, it indicates the number of threads that should
- * be used. If the number is negative or zero, it should be added to the number
- * of cores available on the machine to determine how many threads to use
- * (minimum of 1). If unspecified, should be considered as set to -1."
- */
-fn num_codeql_threads() -> Result<usize, String> {
-    let threads_str = std::env::var("CODEQL_THREADS").unwrap_or_else(|_| "-1".to_owned());
-    match threads_str.parse::<i32>() {
-        Ok(num) if num <= 0 => {
-            let reduction = -num as usize;
-            Ok(std::cmp::max(1, num_cpus::get() - reduction))
-        }
-        Ok(num) => Ok(num as usize),
-
-        Err(_) => Err(format!(
-            "Unable to parse CODEQL_THREADS value '{}'",
-            &threads_str
-        )),
-    }
-}
+use codeql_extractor::{ generator::{generate}, extractor::{self,Extractor}, diagnostics, node_types, cli::{GenerateArgs, ExtractArgs, Command}};
 
 lazy_static! {
     static ref CP_NUMBER: regex::Regex = regex::Regex::new("cp([0-9]+)").unwrap();
@@ -66,69 +34,33 @@ fn main() -> std::io::Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("ruby_extractor=warn")),
         )
         .init();
+
+    let cli = codeql_extractor::cli::parse_cli();
+
+    match cli.command {
+        Command::Extract(args) => run_extract(args),
+        Command::Generate(args) => run_generate(args),
+        Command::Autobuild => run_autobuild(),
+    }
+    }
+
+fn run_extract(args: ExtractArgs) -> std::io::Result<()> {
     let diagnostics = diagnostics::DiagnosticLoggers::new("ruby");
-    let mut main_thread_logger = diagnostics.logger();
-    let num_threads = match num_codeql_threads() {
-        Ok(num) => num,
-        Err(e) => {
-            main_thread_logger.write(
-                main_thread_logger
-                    .message("configuration-error", "Configuration error")
-                    .text(&format!("{}; defaulting to 1 thread.", e))
-                    .status_page()
-                    .severity(diagnostics::Severity::Warning),
-            );
-            1
-        }
-    };
+
     tracing::info!(
         "Using {} {}",
-        num_threads,
-        if num_threads == 1 {
+        args.codeql_threads,
+        if args.codeql_threads == 1 {
             "thread"
         } else {
             "threads"
         }
     );
-    let trap_compression = match trap::Compression::from_env("CODEQL_RUBY_TRAP_COMPRESSION") {
-        Ok(x) => x,
-        Err(e) => {
-            main_thread_logger.write(
-                main_thread_logger
-                    .message("configuration-error", "Configuration error")
-                    .text(&format!("{}; using gzip.", e))
-                    .status_page()
-                    .severity(diagnostics::Severity::Warning),
-            );
-            trap::Compression::Gzip
-        }
-    };
-    drop(main_thread_logger);
+
     rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads)
+        .num_threads(args.codeql_threads)
         .build_global()
         .unwrap();
-
-    let matches = clap::App::new("Ruby extractor")
-        .version("1.0")
-        .author("GitHub")
-        .about("CodeQL Ruby extractor")
-        .arg(arg!(--"source-archive-dir" <DIR> "Sets a custom source archive folder"))
-        .arg(arg!(--"output-dir" <DIR>         "Sets a custom trap folder"))
-        .arg(arg!(--"file-list" <FILE_LIST>    "A text file containing the paths of the files to extract"))
-        .get_matches();
-    let src_archive_dir = matches
-        .value_of("source-archive-dir")
-        .expect("missing --source-archive-dir");
-    let src_archive_dir = PathBuf::from(src_archive_dir);
-
-    let trap_dir = matches
-        .value_of("output-dir")
-        .expect("missing --output-dir");
-    let trap_dir = PathBuf::from(trap_dir);
-
-    let file_list = matches.value_of("file-list").expect("missing --file-list");
-    let file_list = fs::File::open(file_list)?;
 
     let lang_ruby = tree_sitter_ruby::language();
     let lang_erb = tree_sitter_embedded_template::language();
@@ -136,6 +68,8 @@ fn main() -> std::io::Result<()> {
     let schema_ruby = node_types::read_node_types_str("ruby", tree_sitter_ruby::NODE_TYPES)?;
     let schema_erb =
         node_types::read_node_types_str("erb", tree_sitter_embedded_template::NODE_TYPES)?;
+
+    let file_list = fs::File::open(args.file_list)?;
     let lines: std::io::Result<Vec<String>> = std::io::BufReader::new(file_list).lines().collect();
     let lines = lines?;
 
@@ -144,7 +78,7 @@ fn main() -> std::io::Result<()> {
     let erb_output_directive_id = lang_erb.id_for_node_kind("output_directive", true);
     let erb_code_id = lang_erb.id_for_node_kind("code", true);
 
-    let extractor = Extractor::new(&src_archive_dir, &trap_dir, trap_compression, diagnostics);
+    let extractor = Extractor::new(&args.source_archive_dir, &args.output_dir, args.codeql_trap_compression, diagnostics);
 
     extractor.for_each(lines, |path, mut source, logger, trap_writer| {
         let mut code_ranges = vec![];
@@ -241,6 +175,65 @@ fn main() -> std::io::Result<()> {
 
         Ok((source, needs_conversion))
     })
+}
+
+
+fn run_generate(args: GenerateArgs) -> std::io::Result<()> {
+    use codeql_extractor::generator::language::Language;
+
+    let languages = vec![
+        Language {
+            name: "Ruby".to_owned(),
+            node_types: tree_sitter_ruby::NODE_TYPES,
+        },
+        Language {
+            name: "Erb".to_owned(),
+            node_types: tree_sitter_embedded_template::NODE_TYPES,
+        },
+    ];
+
+    generate(args.dbscheme, args.library, languages)
+}
+
+fn run_autobuild() -> std::io::Result<()> {
+    use std::env;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    let dist = env::var("CODEQL_DIST").expect("CODEQL_DIST not set");
+    let db = env::var("CODEQL_EXTRACTOR_RUBY_WIP_DATABASE")
+        .expect("CODEQL_EXTRACTOR_RUBY_WIP_DATABASE not set");
+    let codeql = if env::consts::OS == "windows" {
+        "codeql.exe"
+    } else {
+        "codeql"
+    };
+    let codeql: PathBuf = [&dist, codeql].iter().collect();
+    let mut cmd = Command::new(codeql);
+    cmd.arg("database")
+        .arg("index-files")
+        .arg("--include-extension=.rb")
+        .arg("--include-extension=.erb")
+        .arg("--include-extension=.gemspec")
+        .arg("--include=**/Gemfile")
+        .arg("--exclude=**/.git")
+        .arg("--size-limit=5m")
+        .arg("--language=ruby")
+        .arg("--working-dir=.")
+        .arg(db);
+
+    for line in env::var("LGTM_INDEX_FILTERS")
+        .unwrap_or_default()
+        .split('\n')
+    {
+        if let Some(stripped) = line.strip_prefix("include:") {
+            cmd.arg("--also-match=".to_owned() + stripped);
+        } else if let Some(stripped) = line.strip_prefix("exclude:") {
+            cmd.arg("--exclude=".to_owned() + stripped);
+        }
+    }
+    let exit = &cmd.spawn()?.wait()?;
+    std::process::exit(exit.code().unwrap_or(1))
 }
 
 fn scan_erb(

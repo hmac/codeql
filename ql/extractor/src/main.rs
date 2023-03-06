@@ -1,39 +1,8 @@
-extern crate num_cpus;
-
 use std::fs;
 use std::io::BufRead;
 use std::path::PathBuf;
 
-use codeql_extractor::{extractor::Extractor, diagnostics, node_types, trap};
-
-/**
- * Gets the number of threads the extractor should use, by reading the
- * CODEQL_THREADS environment variable and using it as described in the
- * extractor spec:
- *
- * "If the number is positive, it indicates the number of threads that should
- * be used. If the number is negative or zero, it should be added to the number
- * of cores available on the machine to determine how many threads to use
- * (minimum of 1). If unspecified, should be considered as set to -1."
- */
-fn num_codeql_threads() -> usize {
-    let threads_str = std::env::var("CODEQL_THREADS").unwrap_or_else(|_| "-1".to_owned());
-    match threads_str.parse::<i32>() {
-        Ok(num) if num <= 0 => {
-            let reduction = -num as usize;
-            std::cmp::max(1, num_cpus::get() - reduction)
-        }
-        Ok(num) => num as usize,
-
-        Err(_) => {
-            tracing::error!(
-                "Unable to parse CODEQL_THREADS value '{}'; defaulting to 1 thread.",
-                &threads_str
-            );
-            1
-        }
-    }
-}
+use codeql_extractor::{ generator::{generate, language::Language}, extractor::Extractor, diagnostics, node_types, cli::{GenerateArgs, ExtractArgs, Command}};
 
 fn main() -> std::io::Result<()> {
     tracing_subscriber::fmt()
@@ -42,59 +11,34 @@ fn main() -> std::io::Result<()> {
         .with_level(true)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
-    let diagnostics = diagnostics::DiagnosticLoggers::new("ql");
-    let mut main_thread_logger = diagnostics.logger();
 
-    let num_threads = num_codeql_threads();
+    let cli = codeql_extractor::cli::parse_cli();
+
+    match cli.command {
+        Command::Extract(args) => run_extract(args),
+        Command::Generate(args) => run_generate(args),
+        Command::Autobuild => run_autobuild(),
+    }
+}
+
+fn run_extract(args: ExtractArgs) -> std::io::Result<()> {
+    let diagnostics = diagnostics::DiagnosticLoggers::new("ql");
+
     tracing::info!(
         "Using {} {}",
-        num_threads,
-        if num_threads == 1 {
+        args.codeql_threads,
+        if args.codeql_threads == 1 {
             "thread"
         } else {
             "threads"
         }
     );
     rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads)
+        .num_threads(args.codeql_threads)
         .build_global()
         .unwrap();
 
-    let matches = clap::App::new("QL extractor")
-        .version("1.0")
-        .author("GitHub")
-        .about("CodeQL QL extractor")
-        .args_from_usage(
-            "--source-archive-dir=<DIR> 'Sets a custom source archive folder'
-                    --output-dir=<DIR>         'Sets a custom trap folder'
-                    --file-list=<FILE_LIST>    'A text files containing the paths of the files to extract'",
-        )
-        .get_matches();
-    let src_archive_dir = matches
-        .value_of("source-archive-dir")
-        .expect("missing --source-archive-dir");
-    let src_archive_dir = PathBuf::from(src_archive_dir);
-
-    let trap_dir = matches
-        .value_of("output-dir")
-        .expect("missing --output-dir");
-    let trap_dir = PathBuf::from(trap_dir);
-    let trap_compression = match trap::Compression::from_env("CODEQL_RUBY_TRAP_COMPRESSION") {
-        Ok(x) => x,
-        Err(e) => {
-            main_thread_logger.write(
-                main_thread_logger
-                    .message("configuration-error", "Configuration error")
-                    .text(&format!("{}; using gzip.", e))
-                    .status_page()
-                    .severity(diagnostics::Severity::Warning),
-            );
-            trap::Compression::Gzip
-        }
-    };
-
-    let file_list = matches.value_of("file-list").expect("missing --file-list");
-    let file_list = fs::File::open(file_list)?;
+    let file_list = fs::File::open(args.file_list)?;
 
     let language = tree_sitter_ql::language();
     let dbscheme = tree_sitter_ql_dbscheme::language();
@@ -111,7 +55,7 @@ fn main() -> std::io::Result<()> {
     let lines: std::io::Result<Vec<String>> = std::io::BufReader::new(file_list).lines().collect();
     let lines = lines?;
 
-    let mut extractor = Extractor::new(&src_archive_dir, &trap_dir, trap_compression, diagnostics);
+    let mut extractor = Extractor::new(&args.source_archive_dir, &args.output_dir, args.codeql_trap_compression, diagnostics);
 
     let lang_dbscheme = extractor.build_language("dbscheme", dbscheme, dbscheme_schema);
     let lang_yaml = extractor.build_language("yaml", yaml, yaml_schema);
@@ -135,4 +79,74 @@ fn main() -> std::io::Result<()> {
     extractor.register_extension("qll", "ql");
 
     extractor.run(lines)
+}
+
+fn run_generate(args: GenerateArgs) -> std::io::Result<()> {
+    let languages = vec![
+        Language {
+            name: "QL".to_owned(),
+            node_types: tree_sitter_ql::NODE_TYPES,
+        },
+        Language {
+            name: "Dbscheme".to_owned(),
+            node_types: tree_sitter_ql_dbscheme::NODE_TYPES,
+        },
+        Language {
+            name: "Yaml".to_owned(),
+            node_types: tree_sitter_ql_yaml::NODE_TYPES,
+        },
+        Language {
+            name: "Blame".to_owned(),
+            node_types: tree_sitter_blame::NODE_TYPES,
+        },
+        Language {
+            name: "JSON".to_owned(),
+            node_types: tree_sitter_json::NODE_TYPES,
+        },
+    ];
+
+    generate(args.dbscheme, args.library, languages)
+}
+
+fn run_autobuild() -> std::io::Result<()> {
+    use std::process::Command;
+    use std::env;
+
+    let dist = env::var("CODEQL_DIST").expect("CODEQL_DIST not set");
+    let db = env::var("CODEQL_EXTRACTOR_QL_WIP_DATABASE")
+        .expect("CODEQL_EXTRACTOR_QL_WIP_DATABASE not set");
+    let codeql = if env::consts::OS == "windows" {
+        "codeql.exe"
+    } else {
+        "codeql"
+    };
+    let codeql: PathBuf = [&dist, codeql].iter().collect();
+    let mut cmd = Command::new(codeql);
+    cmd.arg("database")
+        .arg("index-files")
+        .arg("--include-extension=.ql")
+        .arg("--include-extension=.qll")
+        .arg("--include-extension=.dbscheme")
+        .arg("--include-extension=.json")
+        .arg("--include-extension=.jsonc")
+        .arg("--include-extension=.jsonl")
+        .arg("--include=**/qlpack.yml")
+        .arg("--include=deprecated.blame")
+        .arg("--size-limit=5m")
+        .arg("--language=ql")
+        .arg("--working-dir=.")
+        .arg(db);
+
+    for line in env::var("LGTM_INDEX_FILTERS")
+        .unwrap_or_default()
+        .split('\n')
+    {
+        if let Some(stripped) = line.strip_prefix("include:") {
+            cmd.arg("--also-match=".to_owned() + stripped);
+        } else if let Some(stripped) = line.strip_prefix("exclude:") {
+            cmd.arg("--exclude=".to_owned() + stripped);
+        }
+    }
+    let exit = &cmd.spawn()?.wait()?;
+    std::process::exit(exit.code().unwrap_or(1))
 }
