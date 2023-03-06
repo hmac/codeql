@@ -7,7 +7,13 @@ use std::fs;
 use std::io::BufRead;
 use tree_sitter::{Language, Parser, Range};
 
-use codeql_extractor::{ generator::{generate}, extractor::{self,Extractor}, diagnostics, node_types, cli::{GenerateArgs, ExtractArgs, Command}};
+use codeql_extractor::{
+    cli::{Command, ExtractArgs, GenerateArgs},
+    diagnostics,
+    extractor::{self, Extractor},
+    generator::generate,
+    node_types,
+};
 
 lazy_static! {
     static ref CP_NUMBER: regex::Regex = regex::Regex::new("cp([0-9]+)").unwrap();
@@ -42,25 +48,10 @@ fn main() -> std::io::Result<()> {
         Command::Generate(args) => run_generate(args),
         Command::Autobuild => run_autobuild(),
     }
-    }
+}
 
 fn run_extract(args: ExtractArgs) -> std::io::Result<()> {
     let diagnostics = diagnostics::DiagnosticLoggers::new("ruby");
-
-    tracing::info!(
-        "Using {} {}",
-        args.codeql_threads,
-        if args.codeql_threads == 1 {
-            "thread"
-        } else {
-            "threads"
-        }
-    );
-
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(args.codeql_threads)
-        .build_global()
-        .unwrap();
 
     let lang_ruby = tree_sitter_ruby::language();
     let lang_erb = tree_sitter_embedded_template::language();
@@ -78,7 +69,13 @@ fn run_extract(args: ExtractArgs) -> std::io::Result<()> {
     let erb_output_directive_id = lang_erb.id_for_node_kind("output_directive", true);
     let erb_code_id = lang_erb.id_for_node_kind("code", true);
 
-    let extractor = Extractor::new(&args.source_archive_dir, &args.output_dir, args.codeql_trap_compression, diagnostics);
+    let extractor = Extractor::new(
+        &args.source_archive_dir,
+        &args.output_dir,
+        args.codeql_trap_compression,
+        diagnostics,
+        args.codeql_threads,
+    );
 
     extractor.for_each(lines, |path, mut source, logger, trap_writer| {
         let mut code_ranges = vec![];
@@ -176,7 +173,6 @@ fn run_extract(args: ExtractArgs) -> std::io::Result<()> {
         Ok((source, needs_conversion))
     })
 }
-
 
 fn run_generate(args: GenerateArgs) -> std::io::Result<()> {
     use codeql_extractor::generator::language::Language;

@@ -30,6 +30,7 @@ pub struct Extractor {
     trap_dir: PathBuf,
     trap_compression: trap::Compression,
     diagnostics: diagnostics::DiagnosticLoggers,
+    num_threads: usize,
 }
 
 impl Extractor {
@@ -38,7 +39,18 @@ impl Extractor {
         trap_dir: &Path,
         trap_compression: trap::Compression,
         diagnostics: diagnostics::DiagnosticLoggers,
+        num_threads: usize,
     ) -> Self {
+        tracing::info!(
+            "Using {} {}",
+            num_threads,
+            if num_threads == 1 {
+                "thread"
+            } else {
+                "threads"
+            }
+        );
+
         Self {
             languages: vec![],
             extensions: Map::new(),
@@ -46,6 +58,7 @@ impl Extractor {
             trap_dir: trap_dir.to_path_buf(),
             trap_compression,
             diagnostics,
+            num_threads,
         }
     }
 
@@ -96,6 +109,11 @@ impl Extractor {
         // These two values are used later, so we need copies of them
         let trap_dir_copy = trap_dir.clone();
 
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(self.num_threads)
+            .build_global()
+            .unwrap();
+
         files.par_iter().try_for_each(move |line| {
             let mut logger = diagnostics.logger();
             let path = PathBuf::from(line).canonicalize()?;
@@ -137,6 +155,11 @@ impl Extractor {
 
         // These two values are used later, so we need copies of them
         let trap_dir_copy = trap_dir.clone();
+
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(self.num_threads)
+            .build_global()
+            .unwrap();
 
         files.par_iter().try_for_each(move |line| {
             let path = PathBuf::from(line).canonicalize()?;

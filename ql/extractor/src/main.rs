@@ -30,20 +30,6 @@ fn main() -> std::io::Result<()> {
 fn run_extract(args: ExtractArgs) -> std::io::Result<()> {
     let diagnostics = diagnostics::DiagnosticLoggers::new("ql");
 
-    tracing::info!(
-        "Using {} {}",
-        args.codeql_threads,
-        if args.codeql_threads == 1 {
-            "thread"
-        } else {
-            "threads"
-        }
-    );
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(args.codeql_threads)
-        .build_global()
-        .unwrap();
-
     let file_list = fs::File::open(args.file_list)?;
     let lines: std::io::Result<Vec<String>> = std::io::BufReader::new(file_list).lines().collect();
     let lines = lines?;
@@ -53,6 +39,7 @@ fn run_extract(args: ExtractArgs) -> std::io::Result<()> {
         &args.output_dir,
         args.codeql_trap_compression,
         diagnostics,
+        args.codeql_threads,
     );
 
     let ql = extractor.register_language(
