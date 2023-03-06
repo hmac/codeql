@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 
 use tree_sitter::{Language, Node, Parser, Range, Tree};
 
-
 pub struct ExtractLanguage {
     prefix: String,
     language: tree_sitter::Language,
@@ -27,7 +26,6 @@ pub struct Extractor {
     trap_compression: trap::Compression,
     diagnostics: diagnostics::DiagnosticLoggers,
 }
-
 
 impl Extractor {
     pub fn new(
@@ -94,7 +92,6 @@ impl Extractor {
 
         // These two values are used later, so we need copies of them
         let trap_dir_copy = trap_dir.clone();
-        let trap_compression_copy = trap_compression.clone();
 
         files.par_iter().try_for_each(move |line| {
             let mut logger = diagnostics.logger();
@@ -107,7 +104,7 @@ impl Extractor {
             // Copy/move archive files
             let archive_file = path_for(&source_archive_dir, &path, "");
             if source_modified {
-                std::fs::write(&archive_file, &source)?;
+                std::fs::write(&archive_file, source)?;
             } else {
                 std::fs::copy(&path, &archive_file)?;
             }
@@ -120,7 +117,7 @@ impl Extractor {
         let path = PathBuf::from("extras");
         let mut trap_writer = trap::Writer::new();
         populate_empty_location(&mut trap_writer);
-        write_trap(&trap_dir_copy, path, &trap_writer, trap_compression_copy)
+        write_trap(&trap_dir_copy, path, &trap_writer, trap_compression)
     }
 
     /// A simple interface to the extractor.
@@ -137,7 +134,6 @@ impl Extractor {
 
         // These two values are used later, so we need copies of them
         let trap_dir_copy = trap_dir.clone();
-        let trap_compression_copy = trap_compression.clone();
 
         files.par_iter().try_for_each(move |line| {
             let path = PathBuf::from(line).canonicalize()?;
@@ -154,26 +150,25 @@ impl Extractor {
                 Some(lang_prefixes) => {
                     // Extract each language
                     for lang_prefix in lang_prefixes {
-                        let lang =
-                            languages
+                        let lang = languages
                             .get(lang_prefix)
                             .expect("Unknown language prefix {lang_prefix}");
 
-                    extract(
-                        lang.language,
-                        &lang.prefix,
-                        &lang.schema,
-                        &mut logger,
-                        &mut trap_writer,
-                        &path,
-                        &source,
-                        &[],
-                    )?;
+                        extract(
+                            lang.language,
+                            &lang.prefix,
+                            &lang.schema,
+                            &mut logger,
+                            &mut trap_writer,
+                            &path,
+                            &source,
+                            &[],
+                        )?;
                     }
 
                     // Copy/move archive files
                     let archive_file = path_for(&source_archive_dir, &path, "");
-                    std::fs::copy(&path, &archive_file)?;
+                    std::fs::copy(&path, archive_file)?;
 
                     // Write trap to file
                     write_trap(&trap_dir, path, &trap_writer, trap_compression)
@@ -185,7 +180,7 @@ impl Extractor {
         let path = PathBuf::from("extras");
         let mut trap_writer = trap::Writer::new();
         populate_empty_location(&mut trap_writer);
-        write_trap(&trap_dir_copy, path, &trap_writer, trap_compression_copy)
+        write_trap(&trap_dir_copy, path, &trap_writer, trap_compression)
     }
 }
 
@@ -196,7 +191,7 @@ fn write_trap(
     trap_compression: trap::Compression,
 ) -> std::io::Result<()> {
     let trap_file = path_for(trap_dir, &path, trap_compression.extension());
-    std::fs::create_dir_all(&trap_file.parent().unwrap())?;
+    std::fs::create_dir_all(trap_file.parent().unwrap())?;
     trap_writer.write_to_file(&trap_file, trap_compression)
 }
 
@@ -374,7 +369,7 @@ pub fn extract(
     let mut parser = Parser::new();
     parser.set_language(language).unwrap();
     parser.set_included_ranges(ranges).unwrap();
-    let tree = parser.parse(&source, None).expect("Failed to parse file");
+    let tree = parser.parse(source, None).expect("Failed to parse file");
     trap_writer.comment(format!("Auto-generated TRAP file for {}", path_str));
     let file_label = populate_file(trap_writer, path);
     let mut visitor = Visitor::new(
