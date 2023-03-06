@@ -1,7 +1,6 @@
 #[macro_use]
 extern crate lazy_static;
 
-use encoding;
 use std::borrow::Cow;
 use std::fs;
 use std::io::BufRead;
@@ -89,7 +88,7 @@ fn run_extract(args: ExtractArgs) -> std::io::Result<()> {
                 &schema_erb,
                 logger,
                 trap_writer,
-                &path,
+                path,
                 &source,
                 &[],
             )?;
@@ -106,66 +105,65 @@ fn run_extract(args: ExtractArgs) -> std::io::Result<()> {
                 }
             }
             code_ranges = ranges;
-        } else {
-            if let Some(encoding_name) = scan_coding_comment(&source) {
-                // If the input is already UTF-8 then there is no need to recode the source
-                // If the declared encoding is 'binary' or 'ascii-8bit' then it is not clear how
-                // to interpret characters. In this case it is probably best to leave the input
-                // unchanged.
-                if !encoding_name.eq_ignore_ascii_case("utf-8")
-                    && !encoding_name.eq_ignore_ascii_case("ascii-8bit")
-                    && !encoding_name.eq_ignore_ascii_case("binary")
-                {
-                    if let Some(encoding) = encoding_from_name(&encoding_name) {
-                        needs_conversion = encoding.whatwg_name().unwrap_or_default() != "utf-8";
-                        if needs_conversion {
-                            match encoding.decode(&source, encoding::types::DecoderTrap::Replace) {
-                                Ok(str) => {
-                                    source = str.as_bytes().to_owned();
-                                }
-                                Err(msg) => {
-                                    needs_conversion = false;
-                                    logger.write(
-                                        logger
-                                            .message(
-                                                "character-encoding-error",
-                                                "Character encoding error",
-                                            )
-                                            .text(&format!(
-                                                "{}: character decoding failure: {} ({})",
-                                                &path.to_string_lossy(),
-                                                msg,
-                                                &encoding_name
-                                            ))
-                                            .status_page()
-                                            .severity(diagnostics::Severity::Warning),
-                                    );
-                                }
+        } else if let Some(encoding_name) = scan_coding_comment(&source) {
+            // If the input is already UTF-8 then there is no need to recode the source
+            // If the declared encoding is 'binary' or 'ascii-8bit' then it is not clear how
+            // to interpret characters. In this case it is probably best to leave the input
+            // unchanged.
+            if !encoding_name.eq_ignore_ascii_case("utf-8")
+                && !encoding_name.eq_ignore_ascii_case("ascii-8bit")
+                && !encoding_name.eq_ignore_ascii_case("binary")
+            {
+                if let Some(encoding) = encoding_from_name(&encoding_name) {
+                    needs_conversion = encoding.whatwg_name().unwrap_or_default() != "utf-8";
+                    if needs_conversion {
+                        match encoding.decode(&source, encoding::types::DecoderTrap::Replace) {
+                            Ok(str) => {
+                                source = str.as_bytes().to_owned();
+                            }
+                            Err(msg) => {
+                                needs_conversion = false;
+                                logger.write(
+                                    logger
+                                        .message(
+                                            "character-encoding-error",
+                                            "Character encoding error",
+                                        )
+                                        .text(&format!(
+                                            "{}: character decoding failure: {} ({})",
+                                            &path.to_string_lossy(),
+                                            msg,
+                                            &encoding_name
+                                        ))
+                                        .status_page()
+                                        .severity(diagnostics::Severity::Warning),
+                                );
                             }
                         }
-                    } else {
-                        logger.write(
-                            logger
-                                .message("character-encoding-error", "Character encoding error")
-                                .text(&format!(
-                                    "{}: unknown character encoding: '{}'",
-                                    &path.to_string_lossy(),
-                                    &encoding_name
-                                ))
-                                .status_page()
-                                .severity(diagnostics::Severity::Warning),
-                        );
                     }
+                } else {
+                    logger.write(
+                        logger
+                            .message("character-encoding-error", "Character encoding error")
+                            .text(&format!(
+                                "{}: unknown character encoding: '{}'",
+                                &path.to_string_lossy(),
+                                &encoding_name
+                            ))
+                            .status_page()
+                            .severity(diagnostics::Severity::Warning),
+                    );
                 }
             }
         }
+
         extractor::extract(
             lang_ruby,
             "ruby",
             &schema_ruby,
             logger,
             trap_writer,
-            &path,
+            path,
             &source,
             &code_ranges,
         )?;
@@ -241,7 +239,7 @@ fn scan_erb(
 ) -> (Vec<Range>, Vec<usize>) {
     let mut parser = Parser::new();
     parser.set_language(erb).unwrap();
-    let tree = parser.parse(&source, None).expect("Failed to parse file");
+    let tree = parser.parse(source, None).expect("Failed to parse file");
     let mut result = Vec::new();
     let mut line_breaks = vec![];
 
