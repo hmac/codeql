@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand, Args};
+use clap::{Args, Parser, Subcommand};
 
 use crate::trap;
 
@@ -15,7 +15,7 @@ pub struct Cli {
 pub enum Command {
     Extract(ExtractArgs),
     Generate(GenerateArgs),
-    Autobuild
+    Autobuild,
 }
 
 #[derive(Args, Clone)]
@@ -34,7 +34,7 @@ pub struct ExtractArgs {
     pub codeql_threads: usize,
     /// The level of compression to use when writing TRAP
     #[arg(long, env, value_parser = parse_trap_compression)]
-    pub codeql_trap_compression: trap::Compression
+    pub codeql_trap_compression: trap::Compression,
 }
 
 /**
@@ -91,13 +91,5 @@ pub struct GenerateArgs {
 }
 
 pub fn parse_cli() -> Cli {
-    tracing_subscriber::fmt()
-        .with_target(false)
-        .without_time()
-        .with_level(true)
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     Cli::parse()
-
 }
