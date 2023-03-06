@@ -7,9 +7,9 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use tree_sitter::{Language, Node, Parser, Range, Tree};
+use tree_sitter::{Node, Parser, Range, Tree};
 
-pub struct ExtractLanguage {
+struct Language {
     prefix: String,
     language: tree_sitter::Language,
     schema: node_types::NodeTypeMap,
@@ -20,8 +20,11 @@ pub struct ExtractLanguage {
 #[derive(Clone, Copy)]
 pub struct LanguageHandle(usize);
 
+/// The codeql extractor. Register the languages you want to extract with `register_language`.
+/// For simple cases, use `run` to extract a list of files.
+/// For more flexibility, use `for_each`.
 pub struct Extractor {
-    languages: Vec<ExtractLanguage>,
+    languages: Vec<Language>,
     extensions: Map<OsString, Vec<LanguageHandle>>,
     source_archive_dir: PathBuf,
     trap_dir: PathBuf,
@@ -59,7 +62,7 @@ impl Extractor {
         language: tree_sitter::Language,
         schema: node_types::NodeTypeMap,
     ) -> LanguageHandle {
-        let lang = ExtractLanguage {
+        let lang = Language {
             prefix: prefix.to_string(),
             language,
             schema,
@@ -344,7 +347,7 @@ fn location(
 
 /// Extracts the source file at `path`, which is assumed to be canonicalized.
 pub fn extract(
-    language: Language,
+    language: tree_sitter::Language,
     language_prefix: &str,
     schema: &NodeTypeMap,
     diagnostics_writer: &mut diagnostics::LogWriter,
