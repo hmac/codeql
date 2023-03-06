@@ -15,7 +15,7 @@ fi
 
 pushd extractor
 "$CARGO" build --release
-"$CARGO" run --release --bin generator -- --dbscheme ../ql/lib/ruby.dbscheme --library ../ql/lib/codeql/ruby/ast/internal/TreeSitter.qll
+"$CARGO" run --release -- generate --dbscheme ../ql/lib/ruby.dbscheme --library ../ql/lib/codeql/ruby/ast/internal/TreeSitter.qll
 popd
 
 codeql query format -i ql/lib/codeql/ruby/ast/internal/TreeSitter.qll
@@ -26,4 +26,3 @@ cp -r codeql-extractor.yml downgrades tools ql/lib/ruby.dbscheme ql/lib/ruby.dbs
 mkdir -p extractor-pack/tools/${platform}
 
 cp extractor/target/release/ruby-extractor extractor-pack/tools/${platform}/extractor
-cp extractor/target/release/autobuilder extractor-pack/tools/${platform}/autobuilder

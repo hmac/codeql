@@ -118,8 +118,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tree-sitter",
- "tree-sitter-embedded-template",
- "tree-sitter-ruby",
 ]
 
 [[package]]
