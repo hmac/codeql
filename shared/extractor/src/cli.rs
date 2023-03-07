@@ -94,7 +94,11 @@ fn num_codeql_threads_from_env(logger: &mut LogWriter) -> usize {
 }
 
 fn trap_compression_from_env(logger: &mut LogWriter) -> trap::Compression {
-    match trap::Compression::from_env("CODEQL_RUBY_TRAP_COMPRESSION") {
+    // CODEQL_RUBY_TRAP_COMPRESSION is a legacy environment variable that we still support for
+    // backwards compatibility.
+    let compression = trap::Compression::from_env("CODEQL_TRAP_COMPRESSION")
+        .or_else(|_| trap::Compression::from_env("CODEQL_RUBY_TRAP_COMPRESSION"));
+    match compression {
         Ok(x) => x,
         Err(e) => {
             logger.write(
