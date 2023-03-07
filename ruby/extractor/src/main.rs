@@ -40,9 +40,7 @@ fn main() -> std::io::Result<()> {
         )
         .init();
 
-    let cli = codeql_extractor::cli::parse_cli();
-
-    match cli.command {
+    match codeql_extractor::cli::parse_cli("ruby") {
         Command::Extract(args) => run_extract(args),
         Command::Generate(args) => run_generate(args),
         Command::Autobuild => run_autobuild(),
@@ -50,7 +48,7 @@ fn main() -> std::io::Result<()> {
 }
 
 fn run_extract(args: ExtractArgs) -> std::io::Result<()> {
-    let diagnostics = diagnostics::DiagnosticLoggers::new("ruby");
+    let diagnostics = args.diagnostics;
 
     let lang_ruby = tree_sitter_ruby::language();
     let lang_erb = tree_sitter_embedded_template::language();

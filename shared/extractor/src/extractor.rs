@@ -124,6 +124,7 @@ impl Extractor {
 
             // Copy/move archive files
             let archive_file = path_for(&source_archive_dir, &path, "");
+            std::fs::create_dir_all(archive_file.parent().unwrap())?;
             if source_modified {
                 std::fs::write(&archive_file, source)?;
             } else {

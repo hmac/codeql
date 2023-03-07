@@ -134,10 +134,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
- "tracing-subscriber",
  "tree-sitter",
- "tree-sitter-embedded-template",
- "tree-sitter-ruby",
 ]
 
 [[package]]
@@ -880,15 +877,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tree-sitter-embedded-template"
-version = "0.20.0"
-source = "git+https://github.com/tree-sitter/tree-sitter-embedded-template.git?rev=203f7bd3c1bbfbd98fc19add4b8fcb213c059205#203f7bd3c1bbfbd98fc19add4b8fcb213c059205"
-dependencies = [
- "cc",
- "tree-sitter",
-]
-
-[[package]]
 name = "tree-sitter-json"
 version = "0.20.0"
 source = "git+https://github.com/tausbn/tree-sitter-json.git?rev=471ceac44d127e609afa349cf0a59370791fe8b3#471ceac44d127e609afa349cf0a59370791fe8b3"
@@ -919,15 +907,6 @@ dependencies = [
 name = "tree-sitter-ql-yaml"
 version = "0.19.0"
 source = "git+https://github.com/erik-krogh/tree-sitter-ql.git?rev=cf704bf3671e1ae148e173464fb65a4d2bbf5f99#cf704bf3671e1ae148e173464fb65a4d2bbf5f99"
-dependencies = [
- "cc",
- "tree-sitter",
-]
-
-[[package]]
-name = "tree-sitter-ruby"
-version = "0.20.0"
-source = "git+https://github.com/tree-sitter/tree-sitter-ruby.git?rev=206c7077164372c596ffa8eaadb9435c28941364#206c7077164372c596ffa8eaadb9435c28941364"
 dependencies = [
  "cc",
  "tree-sitter",

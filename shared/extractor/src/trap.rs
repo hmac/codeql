@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::str::FromStr;
 
 use flate2::write::GzEncoder;
 
@@ -249,6 +250,14 @@ impl Compression {
             Compression::None => "trap",
             Compression::Gzip => "trap.gz",
         }
+    }
+}
+
+impl FromStr for Compression {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Compression::from_string(s).ok_or_else(|| format!("Unknown compression method '{}'", s))
     }
 }
 

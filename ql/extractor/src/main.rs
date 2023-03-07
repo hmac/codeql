@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 use codeql_extractor::{
     cli::{Command, ExtractArgs, GenerateArgs},
-    diagnostics,
     extractor::Extractor,
     generator::{generate, language::Language},
     node_types,
@@ -18,9 +17,7 @@ fn main() -> std::io::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let cli = codeql_extractor::cli::parse_cli();
-
-    match cli.command {
+    match codeql_extractor::cli::parse_cli("ql") {
         Command::Extract(args) => run_extract(args),
         Command::Generate(args) => run_generate(args),
         Command::Autobuild => run_autobuild(),
@@ -28,7 +25,7 @@ fn main() -> std::io::Result<()> {
 }
 
 fn run_extract(args: ExtractArgs) -> std::io::Result<()> {
-    let diagnostics = diagnostics::DiagnosticLoggers::new("ql");
+    let diagnostics = args.diagnostics;
 
     let file_list = fs::File::open(args.file_list)?;
     let lines: std::io::Result<Vec<String>> = std::io::BufReader::new(file_list).lines().collect();
