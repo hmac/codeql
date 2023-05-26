@@ -1,23 +1,10 @@
-use clap::Parser;
+
 
 mod autobuilder;
 mod extractor;
 mod generator;
 
-#[derive(Parser)]
-#[command(author, version, about)]
-enum Cli {
-    Extract(extractor::Options),
-    Generate(generator::Options),
-    Autobuild(autobuilder::Options),
-}
+use codeql_extractor::make_cli;
 
-fn main() -> std::io::Result<()> {
-    let cli = Cli::parse();
+make_cli!(ql, "../../codeql-extractor.yml");
 
-    match cli {
-        Cli::Extract(options) => extractor::run(options),
-        Cli::Generate(options) => generator::run(options),
-        Cli::Autobuild(options) => autobuilder::run(options),
-    }
-}

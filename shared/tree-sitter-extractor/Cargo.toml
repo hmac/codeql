@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 authors = ["GitHub"]
 
+[lib]
+proc-macro = true
+
 [dependencies]
 flate2 = "1.0"
 tree-sitter = "0.20"
