@@ -11,6 +11,7 @@ private import codeql.ruby.dataflow.RemoteFlowSources
 private import codeql.ruby.frameworks.ActiveJob
 private import codeql.ruby.frameworks.core.Module
 private import codeql.ruby.frameworks.core.Kernel
+private import codeql.ruby.frameworks.Yaml
 
 module UnsafeDeserialization {
   /**
@@ -82,27 +83,30 @@ module UnsafeDeserialization {
   class YamlLoadArgument extends Sink {
     YamlLoadArgument() {
       // Note: this is safe in psych/yaml >= 4.0.0.
-      this = yamlNode().getAMethodCall("load").getArgument(0)
+      this = yamlLibrary().getAMethodCall("load").getArgument(0)
       or
       this =
-        yamlNode().getAMethodCall(["unsafe_load_file", "unsafe_load", "load_stream"]).getArgument(0)
+        yamlLibrary()
+            .getAMethodCall(["unsafe_load_file", "unsafe_load", "load_stream"])
+            .getArgument(0)
       or
-      this = yamlNode().getAMethodCall(["unsafe_load", "load_stream"]).getKeywordArgument("yaml")
+      this = yamlLibrary().getAMethodCall(["unsafe_load", "load_stream"]).getKeywordArgument("yaml")
       or
-      this = yamlNode().getAMethodCall("unsafe_load_file").getKeywordArgument("filename")
+      this = yamlLibrary().getAMethodCall("unsafe_load_file").getKeywordArgument("filename")
     }
   }
 
-  private API::Node yamlNode() { result = API::getTopLevelMember(["YAML", "Psych"]) }
-
   /**
    * An argument in a call to `YAML.parse*`, considered a sink for unsafe deserialization
-   * if there is a call to `to_ruby` on the returned value.
+   * if there is a call to `to_ruby` on the returned value of any Successor.
    */
   class YamlParseArgument extends Sink {
     YamlParseArgument() {
-      this =
-        yamlNode().getAMethodCall(["parse", "parse_stream", "parse_file"]).getAMethodCall("to_ruby")
+      exists(API::Node toRubyReceiver |
+        toRubyReceiver = yamlNode() and this = toRubyReceiver.asSource()
+      |
+        exists(toRubyReceiver.getMethod(["to_ruby", "transform"]))
+      )
     }
   }
 
