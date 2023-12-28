@@ -724,6 +724,31 @@ private CfgScope getTargetInstance(RelevantCall call, string method) {
     then result = lookupMethod(call.getExpr().getEnclosingModule().getModule(), method, exact)
     else any()
   )
+  or
+  result = getTemplateCallTarget(call, _, _, method)
+}
+
+class ActionViewClass extends DataFlow::ClassNode {
+  ActionViewClass() { this = DataFlow::getConstant("ApplicationComponent").getADescendentModule() }
+}
+
+Method getTemplateCallTarget(
+  CfgNodes::ExprNodes::MethodCallCfgNode call, ErbFile template, ActionViewClass view, string name
+) {
+  name = call.getMethodName() and
+  view = getTemplateAssociatedViewClass(template) and
+  call.getLocation().getFile() = template and
+  call.getReceiver().getExpr() instanceof SelfVariableAccess and
+  result = lookupMethod(view, name)
+}
+
+ActionViewClass getTemplateAssociatedViewClass(ErbFile template) {
+  // template is in same directory as view
+  exists(File viewFile | viewFile = result.getADeclaration().getFile() |
+    template.getParentContainer().getAbsolutePath() =
+      viewFile.getParentContainer().getAbsolutePath() and
+    viewFile.getStem() + ".html" = template.getStem()
+  )
 }
 
 private module TrackBlockInput implements CallGraphConstruction::Simple::InputSig {
