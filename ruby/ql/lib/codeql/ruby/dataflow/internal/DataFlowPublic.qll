@@ -86,6 +86,42 @@ class Node extends TNode {
   MethodNode getEnclosingMethod() {
     result.asCallableAstNode() = this.asExpr().getExpr().getEnclosingMethod()
   }
+
+  string getNodeType() {
+    this = TExprNode(_) and result = "TExprNode"
+    or
+    this = TReturningNode(_) and result = "TReturningNode"
+    or
+    this = TSsaDefinitionExtNode(_) and result = "TSsaDefinitionExtNode"
+    or
+    this = TCapturedVariableNode(_) and result = "TCapturedVariableNode"
+    or
+    this = TNormalParameterNode(_) and result = "TNormalParameterNode"
+    or
+    this = TSelfParameterNode(_) and result = "TSelfParameterNode"
+    or
+    this = TLambdaSelfReferenceNode(_) and result = "TLambdaSelfReferenceNode"
+    or
+    this = TBlockParameterNode(_) and result = "TBlockParameterNode"
+    or
+    this = TSynthHashSplatParameterNode(_) and result = "TSynthHashSPlatParameterNode"
+    or
+    this = TSynthSplatParameterNode(_) and result = "TSynthSplatParameterNOde"
+    or
+    this = TSynthSplatParameterShiftNode(_, _, _) and result = "TSynthSplatParameterShiftNOde"
+    or
+    this = TExprPostUpdateNode(_) and result = "TExprPostUpdateNode"
+    or
+    this = TFlowSummaryNode(_) and result = "TFlowSummaryNode"
+    or
+    this = TSynthHashSplatArgumentNode(_) and result = "TSynthHashSplatARgumentNode"
+    or
+    this = TSynthSplatArgumentNode(_) and result = "TSynthSplatArgumentNode"
+    or
+    this = TSynthSplatArgumentShiftNode(_, _, _) and result = "TSynthSplatARgumentShiftNode"
+    or
+    this = TCaptureNode(_) and result = "TCaptureNode"
+  }
 }
 
 /** A data-flow node corresponding to a call in the control-flow graph. */

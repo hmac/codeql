@@ -40,8 +40,7 @@ private module Config implements DataFlow::StateConfigSig {
   predicate isAdditionalFlowStep(DataFlow::Node node1, DataFlow::Node node2) {
     isFlowFromViewInstanceVariable(node1, node2) or
     isFlowIntoViewMethod(node1, node2) or
-    isFlowFromViewMethod(node1, node2) or
-    isFlowFromViewSelfToTemplate(node1, node2)
+    isFlowFromViewMethod(node1, node2)
   }
 }
 
@@ -50,27 +49,27 @@ private module Config implements DataFlow::StateConfigSig {
  */
 module CodeInjectionFlow = TaintTracking::GlobalWithState<Config>;
 
-from
-  CodeInjectionFlow::PathNode source, CodeInjectionFlow::PathNode sink,
-  CodeInjection::Source sourceNode
-where
-  CodeInjectionFlow::flowPath(source, sink) and
-  sourceNode = source.getNode() and
-  // removing duplications of the same path, but different flow-labels.
-  sink =
-    min(CodeInjectionFlow::PathNode otherSink |
-      CodeInjectionFlow::flowPath(any(CodeInjectionFlow::PathNode s | s.getNode() = sourceNode),
-        otherSink) and
-      otherSink.getNode() = sink.getNode()
-    |
-      otherSink order by otherSink.getState().getStringRepresentation()
-    )
-select sink.getNode(), source, sink, "This code execution depends on a $@.", sourceNode,
-  "user-provided value"
+// from
+//   CodeInjectionFlow::PathNode source, CodeInjectionFlow::PathNode sink,
+//   CodeInjection::Source sourceNode
+// where
+//   CodeInjectionFlow::flowPath(source, sink) and
+//   sourceNode = source.getNode() and
+//   // removing duplications of the same path, but different flow-labels.
+//   sink =
+//     min(CodeInjectionFlow::PathNode otherSink |
+//       CodeInjectionFlow::flowPath(any(CodeInjectionFlow::PathNode s | s.getNode() = sourceNode),
+//         otherSink) and
+//       otherSink.getNode() = sink.getNode()
+//     |
+//       otherSink order by otherSink.getState().getStringRepresentation()
+//     )
+// select sink.getNode(), source, sink, "This code execution depends on a $@.", sourceNode,
+//   "user-provided value"
+from DataFlow::Node src, DataFlow::Node sink
+where HmacTestFlow::flow(src, sink)
+select src, sink
 
-// from DataFlow::Node src, DataFlow::Node sink
-// where HmacTestFlow::flow(src, sink)
-// select src, sink
 module HmacTestFlow = TaintTracking::Global<HmacTest>;
 
 module HmacTest implements DataFlow::ConfigSig {
@@ -78,15 +77,17 @@ module HmacTest implements DataFlow::ConfigSig {
     node instanceof RemoteFlowSource and
     node.getLocation().getFile().getBaseName() = "repository_items_controller.rb" and
     node.getLocation().getStartLine() = 174
+    or
+    any()
   }
 
-  predicate isSink(DataFlow::Node node) { not isSource(node) }
+  predicate isSink(DataFlow::Node node) { any() }
 
   predicate isAdditionalFlowStep(DataFlow::Node node1, DataFlow::Node node2) {
-    // isFlowFromViewInstanceVariable(node1, node2) or
-    // isFlowIntoViewMethod(node1, node2) or
-    // isFlowFromViewMethod(node1, node2) or
-    isFlowFromViewSelfToTemplate(node1, node2)
+    isFlowFromViewInstanceVariable(node1, node2) or
+    isFlowIntoViewMethod(node1, node2) or
+    isFlowFromViewMethod(node1, node2) or
+    isFlowFromViewSelfToTemplate2(node1, node2)
   }
 }
 
@@ -105,15 +106,48 @@ Method getTemplateCallTarget(
   result = lookupMethod(view, call.getMethodName())
 }
 
-predicate isFlowFromViewSelfToTemplate(DataFlow::Node node1, SsaDefinitionExtNode node2) {
-  node1 instanceof DataFlow::SelfParameterNode and
-  node2.getVariable() instanceof SelfVariable and
-  exists(DataFlow::MethodNode method, ErbFile template, ActionViewClass view |
-    getTemplateAssociatedViewClass(template) = view and
-    node2.getLocation().getFile() = template and
-    node1 = method.getSelfParameter() and
-    method = view.getAnInstanceMethod()
-  )
+predicate isFlowFromViewSelfToTemplate(DataFlow::Node node1, CfgNodes::ExprCfgNode e, string k) {
+  node1.getLocation().getStartLine() = 7 and
+  node1.getLocation().getFile() instanceof ErbFile and
+  node1 = TExprNode(e) and
+  k = e.getAPrimaryQlClass()
+}
+
+predicate h(CfgNodes::ExprNodes::SelfVariableAccessCfgNode n, DataFlow::Node m, DataFlow::Node p) {
+  m = TExprNode(n) and HmacTestFlow::flow(p, m)
+}
+
+predicate isFlowFromViewSelfToTemplate2(DataFlow::Node node1, DataFlow::Node node2) {
+  p(_, node1, _, node2)
+}
+
+predicate y(DataFlow::CallNode call, DataFlow::Node arg, ActionViewClass view, DataFlow::Node node2) {
+  call.getMethodName() = "render" and
+  call.getArgument(0) = arg and
+  view.trackInstance().getAValueReachableFromSource() = arg and
+  exists(ErbFile template |
+    view = getTemplateAssociatedViewClass(template) and node2.getLocation().getFile() = template
+  ) and
+  none()
+}
+
+predicate u(DataFlow::Node n, int startCol, DataFlow::Node prev) {
+  n.getLocation().getFile() instanceof ErbFile and
+  n.getLocation().getStartLine() = 7 and
+  startCol = n.getLocation().getStartColumn() and
+  prev = n.getAPredecessor()
+}
+
+predicate p(
+  DataFlow::CallNode call, DataFlow::Node arg, ActionViewClass view, SsaSelfDefinitionNode node2
+) {
+  call.getMethodName() = "render" and
+  call.getArgument(0) = arg and
+  view.trackInstance().getAValueReachableFromSource() = arg and
+  exists(ErbFile template |
+    view = getTemplateAssociatedViewClass(template) and node2.getLocation().getFile() = template
+  ) and
+  node2.getSelfScope() instanceof Toplevel
 }
 
 predicate r(SsaDefinitionExtNode node, SelfVariable var, VariableAccess a) {

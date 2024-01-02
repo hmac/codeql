@@ -207,7 +207,17 @@ private predicate flowsToMethodCallReceiver(
 
 pragma[nomagic]
 private predicate moduleFlowsToMethodCallReceiver(RelevantCall call, Module m, string method) {
-  flowsToMethodCallReceiver(call, trackModuleAccess(m), method)
+  flowsToMethodCallReceiver(call, trackModuleAccess(m), method) or
+  methodCallInTemplate(call, m, _, method)
+}
+
+predicate methodCallInTemplate(
+  CfgNodes::ExprNodes::MethodCallCfgNode call, ActionViewClass c, ErbFile template, string method
+) {
+  c = getTemplateAssociatedViewClass(template) and
+  call.getFile() = template and
+  exists(c.getInstanceMethod(method)) and
+  call.getMethodName() = method
 }
 
 private Block blockCall(RelevantCall call) { lambdaSourceCall(call, _, trackBlock(result)) }
